@@ -8,12 +8,12 @@ from typing import Any, Dict
 
 from langchain_core.output_parsers import JsonOutputParser
 
-# Self-healing fallback when JSON extraction fails (document queries → RAG path)
+# Self-healing fallback when JSON extraction fails
 INTENT_PARSE_FALLBACK: Dict[str, Any] = {
-    "intent": "rag",
-    "confidence": 0.9,
+    "intent": "unknown",
+    "confidence": 0.0,
     "reasoning": "Fallback routing after intent parse failure",
-    "model_used": "gemini-pro",
+    "model_used": "unknown",
     "status": "completed",
     "errors": [],
 }

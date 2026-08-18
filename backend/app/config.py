@@ -35,9 +35,8 @@ class Settings(BaseSettings):
     # ── Google / Gemini ──────────────────────────────────────────────────
     GOOGLE_API_KEY: str = ""
 
-    # ── Hugging Face (fallback LLM) ──────────────────────────────────────
-    HUGGINGFACEHUB_API_TOKEN: str = ""
-    HF_FALLBACK_MODEL: str = "HuggingFaceH4/zephyr-7b-beta"
+    # ── Nvidia NIM (fallback LLM) ────────────────────────────────────────
+    NVIDIA_FALLBACK_MODEL: str = "meta/llama-3.1-70b-instruct"
 
     # ── LangSmith (optional tracing) ─────────────────────────────────────
     LANGCHAIN_ENDPOINT: str = "https://api.smith.langchain.com"
@@ -53,6 +52,9 @@ class Settings(BaseSettings):
     FAISS_CHUNK_SIZE: int = 1000
     FAISS_CHUNK_OVERLAP: int = 200
 
+    # ── Graph Database (Memgraph) ─────────────────────────────────────────
+    MEMGRAPH_URI: str = "bolt://localhost:7687"
+
     # ── SQLite persistence ───────────────────────────────────────────────
     SQLITE_DB_PATH: str = "memory.db"
 
@@ -61,13 +63,18 @@ class Settings(BaseSettings):
 
     # ── Server ───────────────────────────────────────────────────────────
     APP_HOST: str = "0.0.0.0"
-    APP_PORT: int = 8000
+    APP_PORT: int = 8005
     DEBUG: bool = False
+
+    # ── Web Search / Other APIs ──────────────────────────────────────────
+    TAVILY_API_KEY: str = ""
+    NVIDIA_API_KEY: str = ""
 
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = True
+        extra = "ignore"
 
 
 @lru_cache()

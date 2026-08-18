@@ -14,6 +14,7 @@ from typing import Any, Dict
 
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
@@ -48,17 +49,27 @@ INTENT_PROMPT = ChatPromptTemplate.from_messages([
     ("system", """You are an intent classification system for an Enterprise AI Orchestrator.
 
 Classify the user query into one of these intents:
-- "rag": Questions about documents, knowledge base queries, document search
-- "sql": Database queries, data analysis requests, SQL generation needs
-- "code": Code execution requests, data processing scripts, computational tasks
-- "research": Web research, current information lookup, external data gathering
-- "chat": General conversation, clarifications, follow-up questions
+- "rag": Questions explicitly about the uploaded documents, extracting info from the text, or summarizing the files.
+- "sql": Database queries, data analysis requests, SQL generation needs.
+- "code": Code execution requests, data processing scripts, computational tasks.
+- "research": Web research, current events, or looking up facts that require the internet.
+- "chat": General knowledge questions, casual conversation, greetings, or questions that an LLM can answer from its own training data (e.g., "what is the capital of france?").
 
 Context: {context_info}
 
+CRITICAL RULES:
+1. Just because documents are uploaded DOES NOT mean every question is a "rag" query. 
+2. If the user asks a general knowledge question (e.g., "What is the capital of India?", "Write a poem", "Explain quantum physics"), classify it as "chat" or "research", NOT "rag".
+3. Only classify as "rag" if the question is reasonably trying to extract information that would specifically be inside the uploaded documents, or if the user explicitly mentions the document (e.g., "in the pdf", "what does the file say").
+
 Respond ONLY with valid JSON:
 {{"intent": "<intent>", "confidence": <0-1>, "reasoning": "<short explanation>"}}"""),
-    ("human", "Query: {query}\nConversation history:\n{history}"),
+    ("human", """Conversation history (for context only):
+{history}
+
+CURRENT Query to classify: {query}
+
+Remember: Base your classification heavily on the CURRENT Query. Only use the history to resolve pronouns or follow-ups."""),
 ])
 
 CHAT_PROMPT = ChatPromptTemplate.from_messages([
@@ -81,26 +92,25 @@ User: {query} """),
 ])
 
 RAG_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """You are a helpful assistant that answers questions based on the provided documents.
+    ("system", """You are a highly capable AI assistant that answers questions based on the provided documents.
 
-Rules:
-1. Check if the context contains the exact answer.
-   - If YES: Answer efficiently and cite the filename (e.g., [Source: file.pdf]).
-2. If the context contains *related* but not exact info:
-   - Say: "The document contains related information, but not that exact detail."
-   - Then provide the related info or a summary of the context.
-3. If the context is relevant to the topic but completely missing the specific detail:
-   - Say: "I found the document, but it doesn't seem to contain that specific detail. Here is a summary of what it does cover:"
-   - Then summarize the provided context.
-4. DO NOT use general knowledge to hallucinate details not in the text.
-5. DO NOT say "I cannot answer". Always provide at least a summary of what you DO see."""),
+CRITICAL RULES FOR RESPONSE FORMATTING AND QUALITY:
+1. Address the CURRENT 'Question' from the user directly. Use 'Conversation history' ONLY for context if needed (e.g., resolving pronouns).
+2. Write a clear, well-structured, and comprehensive response using Markdown (headings, bold text, bullet points where appropriate).
+3. If the context contains the answer, cite the filename naturally in your sentences (e.g., "According to *file.pdf*...") or at the end of the sentence (e.g., [Source: file.pdf]).
+4. NEVER start your response with a JSON array or random filenames like `["file.pdf"]`. Start directly with your conversational response.
+5. If the context contains *related* but not exact info, say: "The document contains related information, but not that exact detail." Then provide a helpful summary.
+6. If the context is completely missing the requested info, say: "I found the document, but it doesn't seem to contain that specific detail." Then summarize what you DO see.
+7. DO NOT hallucinate details not present in the text.
+8. If the user asks for a learning schedule, timeline, or duration, and the document is a guide or textbook, DO NOT say the information is missing. Instead, use the breadth and complexity of the extracted topics to provide a logical, structured ESTIMATED timeline (e.g., 'Based on the topics covered, here is an estimated 30-day study plan').
+9. DO NOT say "I cannot answer". Always provide at least a useful summary of the provided text."""),
     ("human", """Context from documents:
 {context}
 
-Question: {question}
-
-Conversation history:
+Conversation history (for context only):
 {history}
+
+Current Question: {question}
 
 Answer:"""),
 ])
@@ -141,7 +151,11 @@ async def load_persistent_context_node(state: OrchestratorState) -> Orchestrator
     if not state.get("session_id"):
         state["session_id"] = str(uuid.uuid4())
 
-    history = await storage.load_chat_messages(state["user_id"], ws_id, state["session_id"], limit=50)
+    session_id = state["session_id"]
+    user_id = state["user_id"]
+
+    # Load chat history
+    history = await storage.load_chat_messages(user_id, ws_id, session_id, limit=50)
     state["chat_history"] = history
 
     if not state.get("messages"):
@@ -151,36 +165,30 @@ async def load_persistent_context_node(state: OrchestratorState) -> Orchestrator
             state["messages"].append({"role": m["role"], "content": m["content"], "metadata": {"persisted": True}})
     state["memory_loaded_count"] = len(state["messages"])
 
-    docs, index_path = await storage.list_workspace_documents(state["user_id"], ws_id)
+    # Load existing workspace documents for this session
+    docs, index_path = await storage.list_workspace_documents(user_id, ws_id, session_id)
     state["workspace_documents"] = docs
     state["uploaded_doc_ids"] = [d["doc_id"] for d in docs]
     state["vector_index_path"] = index_path
 
+    # Register any incoming uploaded docs in SQLite
     incoming_paths = state.get("uploaded_docs", [])
-    truly_new_paths = []
-
     if incoming_paths:
-        existing_paths = set()
-        for d in docs:
-            if d.get("file_path"):
-                existing_paths.add(os.path.normpath(os.path.abspath(d["file_path"])))
-
-        base_index_path = index_path or os.path.join("workspaces", state["user_id"], ws_id, "faiss_index")
-
+        base_index_path = index_path or os.path.join(
+            "workspaces", user_id, ws_id, session_id, "faiss_index"
+        )
         for p in incoming_paths:
             abs_p = os.path.normpath(os.path.abspath(p))
-            if abs_p not in existing_paths:
-                truly_new_paths.append(p)
-                doc_id = hashlib.sha256(f"{state['user_id']}|{ws_id}|{abs_p}".encode()).hexdigest()[:32]
-                await storage.upsert_document(state["user_id"], ws_id, doc_id, abs_p, base_index_path)
+            doc_id = hashlib.sha256(f"{user_id}|{ws_id}|{session_id}|{abs_p}".encode()).hexdigest()[:32]
+            await storage.upsert_document(user_id, ws_id, session_id, doc_id, abs_p, base_index_path)
 
-        if truly_new_paths:
-            docs, index_path = await storage.list_workspace_documents(state["user_id"], ws_id)
-            state["workspace_documents"] = docs
-            state["uploaded_doc_ids"] = [d["doc_id"] for d in docs]
-            state["vector_index_path"] = index_path
+        # Refresh documents list
+        docs, index_path = await storage.list_workspace_documents(user_id, ws_id, session_id)
+        state["workspace_documents"] = docs
+        state["uploaded_doc_ids"] = [d["doc_id"] for d in docs]
+        state["vector_index_path"] = index_path
 
-    state["uploaded_docs"] = truly_new_paths
+    # Keep uploaded_docs as-is so rag_node knows what to index
     return state
 
 
@@ -194,7 +202,7 @@ async def save_persistent_context_node(state: OrchestratorState) -> Orchestrator
     return state
 
 
-async def classify_intent_node(state: OrchestratorState) -> OrchestratorState:
+async def classify_intent_node(state: OrchestratorState, config: RunnableConfig) -> OrchestratorState:
     """Classify user intent via LLM."""
     state = normalize_state(state)
     ensure_metadata(state)
@@ -238,7 +246,7 @@ async def classify_intent_node(state: OrchestratorState) -> OrchestratorState:
         parts.append(f"Documents available: {len(uploaded_docs) + len(workspace_docs)} files uploaded")
     else:
         parts.append("No documents uploaded")
-    parts.append("Research tool: DuckDuckGo search available")
+    parts.append("Research tool: Tavily search available")
     context_info = " | ".join(parts)
 
     query = state.get("user_query", "")
@@ -256,35 +264,24 @@ async def classify_intent_node(state: OrchestratorState) -> OrchestratorState:
         )
     except Exception as e:
         state["errors"].append(f"Prompt formatting error: {e}")
-        if has_docs:
-            state["intent"] = Intent.RAG.value
-            state["intent_confidence"] = 0.9
-            state["metadata"]["intent_reasoning"] = "Prompt format fallback → document search (RAG)"
-        else:
-            state["intent"] = Intent.UNKNOWN.value
-            state["intent_confidence"] = 0.0
+        state["intent"] = Intent.UNKNOWN.value
+        state["intent_confidence"] = 0.0
         return state
 
     try:
         response = await llm_router.ainvoke(prompt_msgs, state=state, temperature=0.1)
     except Exception as e:
         state["errors"].append(f"LLM invocation error: {e}")
-        if has_docs:
-            state["intent"] = Intent.RAG.value
-            state["intent_confidence"] = 0.9
-        else:
-            state["intent"] = Intent.UNKNOWN.value
-            state["intent_confidence"] = 0.0
+        state["intent"] = Intent.UNKNOWN.value
+        state["intent_confidence"] = 0.0
         return state
 
     text = getattr(response, "content", None)
+    logger.info("Raw intent LLM response: %r", text)
     if not isinstance(text, str):
-        if has_docs:
-            state["intent"] = Intent.RAG.value
-            state["intent_confidence"] = 0.9
-        else:
-            state["intent"] = Intent.UNKNOWN.value
-            state["intent_confidence"] = 0.0
+        state["intent"] = Intent.UNKNOWN.value
+        state["intent_confidence"] = 0.0
+        return state
         return state
 
     parsed = parse_intent_llm_response(text)
@@ -333,18 +330,25 @@ def route_after_classification(state: OrchestratorState) -> str:
 
         if has_docs:
             rag_triggers = ["explain", "summarize", "what", "where", "how", "list", "describe", "analysis", "insight"]
-            if any(t in query_lower for t in rag_triggers) and len(query) > 5:
+            # Only trigger RAG on fallback if the query specifically looks like it's referring to the docs
+            doc_keywords = ["document", "pdf", "file", "text", "resume", "attached"]
+            is_asking_about_doc = any(kw in query_lower for kw in doc_keywords)
+            
+            if is_asking_about_doc or (any(t in query_lower for t in rag_triggers) and confidence > 0.2):
                 state["intent"] = Intent.RAG.value
-                state["intent_confidence"] = 0.8
-                return "rag_agent"
-            if len(query) > 10:
-                state["intent"] = Intent.RAG.value
-                state["intent_confidence"] = 0.55
+                state["intent_confidence"] = 0.5
                 return "rag_agent"
 
         state["intent"] = Intent.CHAT.value
         state["intent_confidence"] = 0.6
         return "fallback_handler"
+        
+    # If they explicitly uploaded a new document in this exact turn, ALWAYS route to RAG
+    if state.get("uploaded_docs"):
+        state["intent"] = Intent.RAG.value
+        state["intent_confidence"] = 1.0
+        logger.info("route_intent: uploaded_docs present, routing to rag_agent")
+        return "rag_agent"
 
     routing = {
         Intent.RAG.value: "rag_agent",
@@ -353,36 +357,68 @@ def route_after_classification(state: OrchestratorState) -> str:
         Intent.RESEARCH.value: "research_agent",
         Intent.CHAT.value: "chat_agent",
     }
-    return routing.get(intent, "fallback_handler")
+    target = routing.get(intent, "fallback_handler")
+    logger.info("route_intent: classified intent=%s, routing to %s", intent, target)
+    return target
 
 
-async def rag_node(state: OrchestratorState) -> OrchestratorState:
-    """RAG agent node."""
+async def rag_node(state: OrchestratorState, config: RunnableConfig) -> OrchestratorState:
+    """RAG agent node — Hybrid GraphRAG (FAISS + Memgraph)."""
     state = normalize_state(state)
     try:
-        # Load new documents if any
-        await rag_service.load_documents(
-            doc_paths=state.get("uploaded_docs", []),
-            tenant_id=state.get("tenant_id", "default"),
-            user_id=state.get("user_id", "guest"),
-            workspace_id=state.get("workspace_id", "default"),
-            vector_index_path=state.get("vector_index_path"),
-            errors=state["errors"],
-        )
+        user_id = state.get("user_id", "guest")
+        session_id = state.get("session_id", "default")
+        vector_index_path = state.get("vector_index_path")
+        uploaded_docs = state.get("uploaded_docs", [])
 
-        # Retrieve context
+        # Build list of document names for context
+        doc_names = []
+        for p in uploaded_docs:
+            doc_names.append(os.path.basename(p))
+        for d in state.get("workspace_documents", []):
+            name = os.path.basename(d.get("file_path", ""))
+            if name and name not in doc_names:
+                doc_names.append(name)
+
+        logger.info("RAG node: user=%s session=%s docs=%s", user_id, session_id, doc_names)
+
+        # Load new documents if any (FAISS + Memgraph graph extraction)
+        chunks_indexed = await rag_service.load_documents(
+            doc_paths=uploaded_docs,
+            user_id=user_id,
+            session_id=session_id,
+            vector_index_path=vector_index_path,
+            errors=state["errors"],
+            llm_router=llm_router,  # Enables Memgraph graph extraction
+        )
+        logger.info("RAG indexed %d new chunks", chunks_indexed)
+
+        # Dynamic Context Scaling: 
+        # If the user asks for a global summary, fetch a massive amount of chunks (k=150)
+        # Otherwise, fetch a robust default context (k=20).
+        user_query = state.get("user_query", "").lower()
+        global_keywords = ["explain", "summarize", "all", "whole", "complete", "everything", "about", "days", "learn"]
+        k_val = 150 if any(w in user_query for w in global_keywords) else 20
+
+        # Hybrid Retrieve: FAISS semantic search + Memgraph graph context
         context = await rag_service.search(
             query=state.get("user_query", ""),
-            tenant_id=state.get("tenant_id", "default"),
-            user_id=state.get("user_id", "guest"),
-            workspace_id=state.get("workspace_id", "default"),
-            vector_index_path=state.get("vector_index_path"),
+            user_id=user_id,
+            session_id=session_id,
+            vector_index_path=vector_index_path,
             errors=state["errors"],
+            k=k_val,
+            llm_router=llm_router,  # Enables Memgraph graph retrieval
         )
         state["retrieved_context"] = context
 
+        logger.info("Hybrid RAG context length: %d", len(context))
         if not context or len(context.strip()) < 10:
-            state["final_answer"] = "The uploaded documents do not contain this information."
+            logger.info("RAG context too short, returning early.")
+            if doc_names:
+                state["final_answer"] = f"I have the document(s) ({', '.join(doc_names)}) but couldn't find relevant content for your question. Please try rephrasing."
+            else:
+                state["final_answer"] = "No documents have been uploaded yet. Please upload a document first."
             state["execution_status"] = "completed"
             return state
 
@@ -394,7 +430,9 @@ async def rag_node(state: OrchestratorState) -> OrchestratorState:
         msgs = RAG_PROMPT.format_messages(
             context=context, question=state.get("user_query", ""), history=history or "No previous conversation",
         )
-        resp = await llm_router.ainvoke(msgs, state=state, temperature=0.0)
+        logger.info("RAG calling LLM...")
+        resp = await llm_router.ainvoke(msgs, state=state, config=config, temperature=0.0)
+        logger.info("RAG LLM returned.")
         answer = getattr(resp, "content", str(resp))
 
         if state.get("fallback_reason") and not state.get("metadata", {}).get("fallback_notified"):
@@ -404,8 +442,9 @@ async def rag_node(state: OrchestratorState) -> OrchestratorState:
         state["final_answer"] = answer
         state["execution_status"] = "completed"
         state["confidence_score"] = state.get("intent_confidence", 0.8)
-        state["messages"].append({"role": "assistant", "content": answer, "metadata": {"agent": "rag"}})
+        state["messages"].append({"role": "assistant", "content": answer, "metadata": {"agent": "rag", "sources": doc_names}})
     except Exception as e:
+        logger.exception("RAG execution error")
         state = normalize_state(state)
         state["errors"].append(f"RAG execution error: {e}")
         state["execution_status"] = "failed"
@@ -413,7 +452,7 @@ async def rag_node(state: OrchestratorState) -> OrchestratorState:
     return state
 
 
-async def chat_node(state: OrchestratorState) -> OrchestratorState:
+async def chat_node(state: OrchestratorState, config: RunnableConfig) -> OrchestratorState:
     """Chat agent node."""
     state = normalize_state(state)
     try:
@@ -423,7 +462,7 @@ async def chat_node(state: OrchestratorState) -> OrchestratorState:
             history = "\n".join(f"{m.get('role','unknown')}: {str(m.get('content',''))[:200]}" for m in recent)
 
         msgs = CHAT_PROMPT.format_messages(history=history or "No previous conversation", query=state.get("user_query", ""))
-        resp = await llm_router.ainvoke(msgs, state=state, temperature=0.7)
+        resp = await llm_router.ainvoke(msgs, state=state, config=config, temperature=0.7)
         answer = getattr(resp, "content", str(resp))
 
         state["final_answer"] = answer
@@ -438,7 +477,7 @@ async def chat_node(state: OrchestratorState) -> OrchestratorState:
     return state
 
 
-async def research_node(state: OrchestratorState) -> OrchestratorState:
+async def research_node(state: OrchestratorState, config: RunnableConfig) -> OrchestratorState:
     """Research agent node – web search + LLM synthesis."""
     import asyncio
     state = normalize_state(state)
@@ -448,15 +487,26 @@ async def research_node(state: OrchestratorState) -> OrchestratorState:
         # Best-effort web search
         search_results = []
         try:
-            from langchain_community.tools import DuckDuckGoSearchRun
-            tool = DuckDuckGoSearchRun()
-            raw = await asyncio.to_thread(tool.run, query)
-            if isinstance(raw, str):
-                for i, part in enumerate(raw.split("\n\n")[:5]):
-                    if part.strip():
-                        search_results.append({"title": f"Result {i+1}", "snippet": part[:500], "url": ""})
-        except Exception:
-            pass
+            from langchain_community.tools.tavily_search import TavilySearchResults
+            from backend.app.config import get_settings
+            
+            tavily_key = get_settings().TAVILY_API_KEY
+            if not tavily_key:
+                logger.warning("TAVILY_API_KEY is not set. Skipping web search.")
+            else:
+                os.environ["TAVILY_API_KEY"] = tavily_key
+                tool = TavilySearchResults(max_results=5)
+                # Tavily returns list of dicts directly
+                results = await asyncio.to_thread(tool.invoke, {"query": query})
+                if isinstance(results, list):
+                    for i, r in enumerate(results):
+                        search_results.append({
+                            "title": r.get("title", f"Result {i+1}"), 
+                            "snippet": r.get("content", str(r))[:500], 
+                            "url": r.get("url", "")
+                        })
+        except Exception as search_err:
+            logger.warning("Web search failed: %s", search_err)
 
         state["research_results"] = search_results
 
@@ -467,7 +517,7 @@ async def research_node(state: OrchestratorState) -> OrchestratorState:
 
         search_text = "\n\n".join(f"[{i+1}] {r.get('title','')}\n{r.get('snippet','')}" for i, r in enumerate(search_results))
         msgs = RESEARCH_PROMPT.format_messages(query=query, search_results=search_text or "No results found.", history=history or "No previous conversation")
-        resp = await llm_router.ainvoke(msgs, state=state, temperature=0.3)
+        resp = await llm_router.ainvoke(msgs, state=state, config=config, temperature=0.3)
         answer = getattr(resp, "content", str(resp))
 
         if state.get("fallback_reason") and not state.get("metadata", {}).get("fallback_notified"):
@@ -479,6 +529,7 @@ async def research_node(state: OrchestratorState) -> OrchestratorState:
         state["confidence_score"] = 0.75
         state["messages"].append({"role": "assistant", "content": answer, "metadata": {"agent": "research", "sources_count": len(search_results)}})
     except Exception as e:
+        logger.exception("Research execution error")
         state = normalize_state(state)
         state["errors"].append(f"Research execution error: {e}")
         state["execution_status"] = "failed"
@@ -486,12 +537,22 @@ async def research_node(state: OrchestratorState) -> OrchestratorState:
     return state
 
 
-async def sql_node(state: OrchestratorState) -> OrchestratorState:
-    """SQL agent node (placeholder – generates SQL via LLM)."""
+async def sql_node(state: OrchestratorState, config: RunnableConfig) -> OrchestratorState:
+    """SQL agent node (generates SQL via LLM)."""
     state = normalize_state(state)
+    query = state.get("user_query", "")
     try:
-        state["final_answer"] = "SQL agent functionality is available. Please configure a database connection."
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", "You are a SQL expert. Write a valid SQL query to solve the user's task based on standard assumptions. Return ONLY the SQL query, without markdown blocks or explanations."),
+            ("human", "{query}")
+        ])
+        sql_resp = await llm_router.ainvoke(prompt.format_messages(query=query), state=state, config=config, temperature=0.1)
+        sql = getattr(sql_resp, "content", str(sql_resp)).replace("```sql", "").replace("```", "").strip()
+        
+        answer = f"I generated the SQL query for your task (No active DB configured to run it):\n\n```sql\n{sql}\n```"
+        state["final_answer"] = answer
         state["execution_status"] = "completed"
+        state["messages"].append({"role": "assistant", "content": answer, "metadata": {"agent": "sql"}})
     except Exception as e:
         state["errors"].append(f"SQL error: {e}")
         state["execution_status"] = "failed"
@@ -499,12 +560,35 @@ async def sql_node(state: OrchestratorState) -> OrchestratorState:
     return state
 
 
-async def code_node(state: OrchestratorState) -> OrchestratorState:
-    """Code agent node (placeholder – generates & executes code via LLM)."""
+async def code_node(state: OrchestratorState, config: RunnableConfig) -> OrchestratorState:
+    """Code agent node (generates & executes code via LLM)."""
     state = normalize_state(state)
+    query = state.get("user_query", "")
     try:
-        state["final_answer"] = "Code execution agent is available. Provide a code task to proceed."
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", "You are a Python code generator. Write ONLY valid Python code to solve the user's task. Do not include markdown formatting or explanations. If you need to print output, use print()."),
+            ("human", "{query}")
+        ])
+        code_resp = await llm_router.ainvoke(prompt.format_messages(query=query), state=state, config=config, temperature=0.1)
+        code = getattr(code_resp, "content", str(code_resp)).replace("```python", "").replace("```", "").strip()
+        
+        # Execute it
+        import sys, io
+        old_stdout = sys.stdout
+        redirected_output = sys.stdout = io.StringIO()
+        try:
+            exec(code, {})
+        except Exception as exec_err:
+            print(f"Error executing code: {exec_err}")
+        finally:
+            sys.stdout = old_stdout
+            
+        output = redirected_output.getvalue()
+        
+        answer = f"**Generated Code:**\n```python\n{code}\n```\n\n**Output:**\n```text\n{output or 'Code executed successfully with no output.'}\n```"
+        state["final_answer"] = answer
         state["execution_status"] = "completed"
+        state["messages"].append({"role": "assistant", "content": answer, "metadata": {"agent": "code"}})
     except Exception as e:
         state["errors"].append(f"Code error: {e}")
         state["execution_status"] = "failed"
@@ -545,11 +629,11 @@ async def graceful_fallback_node(state: OrchestratorState) -> OrchestratorState:
     return state
 
 
-async def fallback_node(state: OrchestratorState) -> OrchestratorState:
+async def fallback_node(state: OrchestratorState, config: RunnableConfig) -> OrchestratorState:
     """Fallback – route to chat for a direct answer."""
     state = normalize_state(state)
     try:
-        return await chat_node(state)
+        return await chat_node(state, config)
     except Exception as e:
         state["errors"].append(f"Fallback error: {e}")
         state["final_answer"] = "I apologize, but I encountered an error. Please try again."

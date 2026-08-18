@@ -87,6 +87,15 @@ def init_db(db_path: str | None = None) -> None:
             conn.execute(
                 "ALTER TABLE chat_messages ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'"
             )
+        try:
+            conn.execute("SELECT session_id FROM user_documents LIMIT 1")
+        except sqlite3.OperationalError:
+            conn.execute(
+                "ALTER TABLE user_documents ADD COLUMN session_id TEXT NOT NULL DEFAULT 'default'"
+            )
+            # Recreate primary key if possible, but SQLite ALTER TABLE doesn't support changing PRIMARY KEY easily.
+            # It's fine, the combination will still be unique enough for our purposes or we rely on the default.
+
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_chat_messages ON chat_messages(user_id, workspace_id, session_id, ts_utc)"
         )
@@ -176,6 +185,7 @@ def _append_chat_messages_sync(
 def _upsert_document_sync(
     user_id: str,
     workspace_id: str,
+    session_id: str,
     doc_id: str,
     file_path: str,
     vector_index_path: str,
@@ -184,18 +194,19 @@ def _upsert_document_sync(
     with _connect() as conn:
         conn.execute(
             """
-            INSERT INTO user_documents(user_id, workspace_id, doc_id, file_path, vector_index_path)
-            VALUES(?, ?, ?, ?, ?)
+            INSERT INTO user_documents(user_id, workspace_id, session_id, doc_id, file_path, vector_index_path)
+            VALUES(?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id, workspace_id, doc_id) DO UPDATE SET
+              session_id=excluded.session_id,
               file_path=excluded.file_path,
               vector_index_path=excluded.vector_index_path
             """,
-            (user_id, workspace_id, doc_id, file_path, vector_index_path),
+            (user_id, workspace_id, session_id, doc_id, file_path, vector_index_path),
         )
 
 
 def _list_workspace_documents_sync(
-    user_id: str, workspace_id: str
+    user_id: str, workspace_id: str, session_id: str
 ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     init_db()
     with _connect() as conn:
@@ -203,10 +214,10 @@ def _list_workspace_documents_sync(
             """
             SELECT doc_id, file_path, vector_index_path, ts_utc
             FROM user_documents
-            WHERE user_id = ? AND workspace_id = ?
+            WHERE user_id = ? AND workspace_id = ? AND session_id = ?
             ORDER BY ts_utc ASC
             """,
-            (user_id, workspace_id),
+            (user_id, workspace_id, session_id),
         ).fetchall()
     docs = [
         {
@@ -247,18 +258,63 @@ async def append_chat_messages(
 async def upsert_document(
     user_id: str,
     workspace_id: str,
+    session_id: str,
     doc_id: str,
     file_path: str,
     vector_index_path: str,
 ) -> None:
     await asyncio.to_thread(
-        _upsert_document_sync, user_id, workspace_id, doc_id, file_path, vector_index_path
+        _upsert_document_sync, user_id, workspace_id, session_id, doc_id, file_path, vector_index_path
     )
 
 
 async def list_workspace_documents(
-    user_id: str, workspace_id: str
+    user_id: str, workspace_id: str, session_id: str
 ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     return await asyncio.to_thread(
-        _list_workspace_documents_sync, user_id, workspace_id
+        _list_workspace_documents_sync, user_id, workspace_id, session_id
     )
+
+
+def _list_chat_sessions_sync(user_id: str, workspace_id: str) -> List[Dict[str, Any]]:
+    init_db()
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT session_id, name, updated_at
+            FROM chat_sessions
+            WHERE user_id = ? AND workspace_id = ?
+            ORDER BY updated_at DESC
+            """,
+            (user_id, workspace_id),
+        ).fetchall()
+    return [{"session_id": r["session_id"], "name": r["name"], "updated_at": r["updated_at"]} for r in rows]
+
+
+async def list_chat_sessions(user_id: str, workspace_id: str) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(_list_chat_sessions_sync, user_id, workspace_id)
+
+
+def _delete_chat_session_sync(user_id: str, workspace_id: str, session_id: str) -> None:
+    init_db()
+    with _connect() as conn:
+        conn.execute("DELETE FROM chat_messages WHERE user_id = ? AND workspace_id = ? AND session_id = ?", (user_id, workspace_id, session_id))
+        conn.execute("DELETE FROM chat_sessions WHERE user_id = ? AND workspace_id = ? AND session_id = ?", (user_id, workspace_id, session_id))
+
+
+async def delete_chat_session(user_id: str, workspace_id: str, session_id: str) -> None:
+    await asyncio.to_thread(_delete_chat_session_sync, user_id, workspace_id, session_id)
+
+
+def _rename_chat_session_sync(user_id: str, workspace_id: str, session_id: str, name: str) -> None:
+    init_db()
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE chat_sessions SET name = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE user_id = ? AND workspace_id = ? AND session_id = ?",
+            (name, user_id, workspace_id, session_id)
+        )
+
+
+async def rename_chat_session(user_id: str, workspace_id: str, session_id: str, name: str) -> None:
+    await asyncio.to_thread(_rename_chat_session_sync, user_id, workspace_id, session_id, name)
+

@@ -89,8 +89,4 @@ class OrchestratorState(TypedDict):
 
     # ── LLM Model Tracking (Quota-Aware Routing) ──
     model_used: Optional[str]        # e.g. "gemini-2.5-flash" or "huggingface:<repo_id>"
-    fallback_reason: Optional[str]   # set only when fallback is used
-    
-    # ── LLM Model Tracking ──
-    model_used: Optional[str]     # Which LLM model was used (gemini-2.5-flash, huggingface-inference)
-    fallback_reason: Optional[str]  # Reason for fallback (if any, e.g. "ResourceExhausted (429)")
+    fallback_reason: Optional[str]   # set only when fallback is used (e.g. "ResourceExhausted (429)")

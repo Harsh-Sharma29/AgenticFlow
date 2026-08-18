@@ -285,11 +285,11 @@ class AIOrchestrator:
         tenant_id = state.get("tenant_id", "default")
         query = state.get("user_query", "")
         
-        # CRITICAL: Check for research keywords first
+        # CRITICAL: Check for research keywords first (use specific keywords only)
         query_lower = query.lower()
-        research_keywords = ["weather", "temperature", "current", "today", "now", "latest", "recent", "this week", "this month"]
+        research_keywords = ["weather", "temperature", "stock price", "latest news", "breaking news", "this week", "this month", "trending"]
         if any(keyword in query_lower for keyword in research_keywords):
-            # Override to research if query contains research keywords
+            # Override to research if query contains research-specific keywords
             state["intent"] = Intent.RESEARCH.value
             state["intent_confidence"] = max(confidence, 0.75)  # Boost confidence
             metadata = state.get("metadata", {})
@@ -307,7 +307,7 @@ class AIOrchestrator:
             
             if has_docs:
                 query_lower = query.lower()
-                rag_triggers = ["explain", "summarize", "what", "where", "how", "list", "describe", "analysis", "insight"]
+                rag_triggers = ["explain", "summarize", "what does", "according to", "from the document", "in the file", "describe", "analysis", "insight"]
                 is_rag_request = any(t in query_lower for t in rag_triggers)
                 
                 if is_rag_request and len(query) > 5:
@@ -318,11 +318,6 @@ class AIOrchestrator:
                     state["metadata"] = metadata
                     return "rag_agent"
             
-            if has_docs and len(query) > 10:
-                 state["intent"] = Intent.RAG.value
-                 state["intent_confidence"] = 0.55
-                 return "rag_agent"
-
             # Fallback to chat handler (safe default)
             state["intent"] = Intent.CHAT.value
             state["intent_confidence"] = 0.6

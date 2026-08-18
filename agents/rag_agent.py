@@ -193,12 +193,14 @@ Answer:""")
             except Exception as e:
                 state["errors"].append(f"Failed to save FAISS index to {index_path}: {str(e)}")
     
-    def retrieve(self, state: OrchestratorState, k: int = 5) -> str:
-        """Retrieve relevant context for query.
+    def retrieve(self, state: OrchestratorState, k: int = 5, score_threshold: float = 1.2) -> str:
+        """Retrieve relevant context for query with score filtering.
         
         Args:
             state: Orchestrator state
             k: Number of chunks to retrieve
+            score_threshold: Maximum L2 distance (lower = more relevant). Chunks
+                above this threshold are discarded as irrelevant.
             
         Returns:
             Retrieved context string
@@ -208,13 +210,25 @@ Answer:""")
         
         store = self._get_workspace_store(state)
         
-        # Retrieve relevant documents
-        docs = store.similarity_search(query, k=k)
+        # Retrieve with scores for quality filtering
+        docs_with_scores = store.similarity_search_with_score(query, k=k)
         
-        # Combine context
+        # Filter out irrelevant chunks (high distance = low relevance)
+        # Also filter out the placeholder text
+        PLACEHOLDER_TEXTS = {"No documents loaded yet.", "no documents loaded yet."}
+        filtered_docs = [
+            (doc, score) for doc, score in docs_with_scores
+            if score <= score_threshold and doc.page_content.strip() not in PLACEHOLDER_TEXTS
+        ]
+        
+        if not filtered_docs:
+            state["retrieved_context"] = ""
+            return ""
+        
+        # Combine context from relevant documents only
         context = "\n\n".join([
-            f"[Document {i+1}]\n{doc.page_content}"
-            for i, doc in enumerate(docs)
+            f"[Document {i+1} | Relevance: {1.0 - min(score / 2.0, 1.0):.0%}]\n{doc.page_content}"
+            for i, (doc, score) in enumerate(filtered_docs)
         ])
         
         state["retrieved_context"] = context
@@ -230,8 +244,9 @@ Answer:""")
             Generated answer
         """
         state = normalize_state(state)  # type: ignore[arg-type]
-        # Ensure documents are loaded
-        self.load_documents(state)
+        # Only load truly new documents (avoid redundant re-indexing)
+        if state.get("uploaded_docs"):
+            self.load_documents(state)
         
         # Retrieve context
         try:
@@ -240,9 +255,10 @@ Answer:""")
             state["errors"].append(f"Retrieval error: {str(e)}")
             return "I encountered an error searching your documents."
 
-        # HARDENING: If no context retrieved, do not attempt generation
-        if not context or "No relevant documents found" in context or len(context.strip()) < 10:
-             return "The uploaded documents do not contain this information."
+        # HARDENING: If no relevant context retrieved, do not attempt generation
+        # Catches: empty string, placeholder text, very short content
+        if not context or len(context.strip()) < 10 or "No documents loaded yet" in context:
+             return "The uploaded documents do not contain this information. Please upload relevant documents or try rephrasing your question."
         
         # Build conversation history
         history = ""

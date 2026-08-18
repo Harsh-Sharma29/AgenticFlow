@@ -6,7 +6,7 @@ Performs web research using search APIs and summarizes findings.
 from typing import Dict, Any, List
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain_community.tools import DuckDuckGoSearchRun
+from langchain_community.tools.tavily_search import TavilySearchResults
 from state.state import OrchestratorState
 from state.normalize import normalize_state
 from llm.router import LLMRouter
@@ -63,10 +63,10 @@ Provide a comprehensive answer:""")
         """Lazily load search tool on first use (prevents startup blocking)."""
         if self._search_tool is None:
             try:
-                from langchain_community.tools import DuckDuckGoSearchRun
-                self._search_tool = DuckDuckGoSearchRun()
+                from langchain_community.tools.tavily_search import TavilySearchResults
+                self._search_tool = TavilySearchResults(max_results=self.max_results)
             except Exception:
-                # Fallback if DuckDuckGo not available
+                # Fallback if Tavily not available
                 self._search_tool = False  # Use False to mark as attempted
         return self._search_tool if self._search_tool else None
 
@@ -83,25 +83,19 @@ Provide a comprehensive answer:""")
             return []
         
         try:
-            results = self.search_tool.run(query)
+            results = self.search_tool.invoke({"query": query})
             
-            # Parse results (DuckDuckGo returns formatted string)
-            # In production, use structured search APIs for better parsing
+            # Tavily returns a list of dicts: [{"url": "...", "content": "..."}]
             results_list = []
-            
-            # Simple parsing (DuckDuckGo format may vary)
-            if isinstance(results, str):
-                # Split by results if possible
-                parts = results.split('\n\n')[:self.max_results]
-                for i, part in enumerate(parts):
-                    if part.strip():
-                        results_list.append({
-                            "title": f"Result {i+1}",
-                            "snippet": part[:500],  # Limit snippet length
-                            "url": ""
-                        })
+            if isinstance(results, list):
+                for i, r in enumerate(results):
+                    results_list.append({
+                        "title": r.get("title", f"Result {i+1}"),
+                        "snippet": r.get("content", str(r))[:500],
+                        "url": r.get("url", "")
+                    })
             else:
-                results_list = [{"title": "Search Result", "snippet": str(results), "url": ""}]
+                results_list = [{"title": "Search Result", "snippet": str(results)[:500], "url": ""}]
             
             return results_list[:self.max_results]
         except Exception:

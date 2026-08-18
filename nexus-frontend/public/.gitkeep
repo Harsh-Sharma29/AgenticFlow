@@ -1,0 +1,1 @@
+# This file keeps the public folder tracked in git and allows the Dockerfile to copy it successfully.

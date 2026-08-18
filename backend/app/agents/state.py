@@ -38,7 +38,7 @@ class OrchestratorState(TypedDict):
     user_query: str
     intent: Optional[str]
     intent_confidence: Optional[float]
-    messages: Annotated[List[Dict[str, Any]], operator.add]
+    messages: List[Dict[str, Any]]
     conversation_turn: int
     chat_history: List[Dict[str, Any]]
     memory_loaded_count: int

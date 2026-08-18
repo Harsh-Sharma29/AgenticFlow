@@ -11,25 +11,15 @@
 
 ![Nexus AI Orchestrator Dashboard](./workspaces/preview.png)
 
-The production dashboard surfaces **real-time asynchronous graph state updates** as LangGraph nodes execute in the FastAPI worker. **Multi-agent intent routing** classifies each query and dispatches it to the appropriate specialist path (RAG, SQL, Code, Research, or Chat) without blocking the Streamlit UI thread.
-
----
-
-## 💡 High-Level System Overview
-
-**Nexus AI Orchestrator** is a centralized **microservices orchestration layer** that separates concerns between presentation and intelligence. The platform decouples the **Streamlit UI runtime** from heavyweight, **asynchronous graph-engineering pipelines** powered by **FastAPI** and **LangGraph**.
-
-| Layer | Responsibility |
-|-------|----------------|
-| **Frontend (Streamlit)** | Enterprise UI, workspace management, document upload, session UX — communicates only via REST |
+| **Frontend (Next.js)** | Enterprise UI, workspace management, document upload, session UX — communicates only via REST |
 | **Backend (FastAPI)** | Async API gateway, request lifecycle, health checks, CORS, persistence orchestration |
 | **Graph Engine (LangGraph)** | Intent routing, multi-agent execution (RAG, SQL, Code, Research, Chat), retries, approval gates |
 | **Data Plane** | SQLite chat/workspaces, FAISS vector indexes, per-tenant document isolation |
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│                    Streamlit Frontend  (:8501)                           │
-│              Thin client — no LangGraph / LLM imports                     │
+│                    Next.js Frontend  (:3000)                             │
+│              Modern React UI — no LangGraph / LLM imports                │
 └───────────────────────────────┬──────────────────────────────────────────┘
                                 │  REST (API_BASE_URL)
                                 ▼
@@ -53,11 +43,11 @@ This architecture keeps the UI **thread-safe and responsive** while graph nodes,
 
 ### Multi-Container Orchestration
 
-The entire application mesh is **fully containerized** and managed through **`docker-compose`**. Two services — `backend` (FastAPI + LangGraph) and `frontend` (Streamlit) — are built, networked, and started as a single declarative stack. Persistent volumes mount SQLite and FAISS data; shared `./workspaces` binds document uploads across containers.
+The entire application mesh is **fully containerized** and managed through **`docker-compose`**. Two services — `backend` (FastAPI + LangGraph) and `frontend` (Next.js) — are built, networked, and started as a single declarative stack. Persistent volumes mount SQLite and FAISS data; shared `./workspaces` binds document uploads across containers.
 
 ### Microservice Isolation
 
-**Independent layer separation** ensures the Streamlit UI never loads LangGraph, FAISS, or agent runtimes in production. The frontend issues HTTP requests to the API; the **backend worker** owns all AI orchestration under `backend/app/`. This boundary guarantees **thread-safe UI behavior** and eliminates blocking the Streamlit event loop on long-running graph invocations.
+**Independent layer separation** ensures the Next.js UI never loads LangGraph, FAISS, or agent runtimes in production. The frontend issues HTTP requests to the API; the **backend worker** owns all AI orchestration under `backend/app/`. This boundary guarantees **thread-safe UI behavior** and eliminates blocking the Node.js event loop on long-running graph invocations.
 
 ### Live Cloud Infrastructure Deployment
 
@@ -111,14 +101,17 @@ Nexus-ai-orchestrator/
 │       └── config/
 │           └── tenant_config.py    # Multi-tenant / workspace settings
 │
-├── frontend/                       # Streamlit UI image (REST client only)
+├── nexus-frontend/                 # Next.js UI image (REST client only)
 │   ├── Dockerfile
-│   ├── requirements.txt
-│   └── app.py
+│   ├── package.json
+│   └── app/
+│       ├── page.js                 # Main UI & Chat interface
+│       ├── layout.js               # Global layouts
+│       └── globals.css             # UI styling
 │
 ├── workspaces/                     # Shared document & FAISS storage (bind-mounted)
 │   └── preview.png                 # README dashboard screenshot (optional)
-├── streamlit_app.py                # Legacy monolithic UI (local dev reference only)
+├── streamlit_app.py                # Legacy monolithic UI (deprecated)
 ├── requirements.txt                # Root deps for legacy local scripts
 └── README.md
 ```
@@ -178,12 +171,12 @@ DEBUG=false
 ### 3. Build and run the stack
 
 ```bash
-docker-compose up --build
+docker-compose up --build -d
 ```
 
 | Service | URL | Description |
 |---------|-----|-------------|
-| **Frontend** | http://localhost:8501 | Streamlit UI |
+| **Frontend** | http://localhost:3000 | Next.js UI |
 | **Backend** | http://localhost:8000 | FastAPI + OpenAPI |
 | **API Docs** | http://localhost:8000/docs | Interactive Swagger UI |
 | **Health** | http://localhost:8000/api/health | Liveness probe (used by Compose) |

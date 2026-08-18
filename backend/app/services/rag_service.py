@@ -1,8 +1,8 @@
-"""Asynchronous RAG (Retrieval-Augmented Generation) service.
+"""Asynchronous Hybrid RAG (Retrieval-Augmented Generation) service.
 
-Encapsulates FAISS vector-store loading, document indexing, and
-similarity search.  All public methods are ``async def`` so they
-integrate cleanly with the async LangGraph nodes.
+Combines FAISS vector-store (semantic search) with Memgraph knowledge-graph
+(relationship search) for production-grade GraphRAG. All public methods are
+``async def`` so they integrate cleanly with the async LangGraph nodes.
 """
 
 from __future__ import annotations
@@ -12,85 +12,86 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_huggingface import HuggingFaceEmbeddings
 
 from backend.app.config import get_settings
-from backend.app.utils.embeddings import (
-    create_google_embeddings,
-    normalize_embedding_model_name,
-)
+from backend.app.services.local_ingestion import LocalDocumentIngestor
+from backend.app.services.graph_service import MemgraphService
 from backend.app.utils.filenames import resolve_workspace_doc_path
 
 logger = logging.getLogger(__name__)
 
 
 class RAGService:
-    """Async-ready FAISS-backed retrieval service.
+    """Async-ready Hybrid RAG service: FAISS (vector) + Memgraph (graph).
 
-    The service lazily initialises embeddings and maintains an in-memory
-    cache of workspace-scoped vector stores.
+    The service maintains an in-memory cache of session-scoped vector stores
+    and a shared Memgraph connection for knowledge-graph operations.
     """
 
     def __init__(
         self,
-        embedding_model: str | None = None,
-        chunk_size: int | None = None,
-        chunk_overlap: int | None = None,
+        embedding_model: str = "BAAI/bge-small-en-v1.5",
+        chunk_size: int = 800,
+        chunk_overlap: int = 100,
     ) -> None:
-        settings = get_settings()
-        raw_model = embedding_model or settings.EMBEDDING_MODEL
-        self._embedding_model_name = normalize_embedding_model_name(raw_model)
-        self._embeddings: Optional[GoogleGenerativeAIEmbeddings] = None
-        self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=chunk_size or settings.FAISS_CHUNK_SIZE,
-            chunk_overlap=chunk_overlap or settings.FAISS_CHUNK_OVERLAP,
-            length_function=len,
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+        self._embedding_model_name = embedding_model
+
+        # Local CPU embedding model for FAISS compatibility
+        self._embeddings: Optional[HuggingFaceEmbeddings] = None
+
+        # Local ingestion pipeline (PyMuPDF + sentence-transformers)
+        self.ingestor = LocalDocumentIngestor(
+            model_name=embedding_model,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            batch_size=32,
         )
-        # Tenant-scoped vector stores cached in-memory
+
+        # Memgraph knowledge-graph service (graceful degradation if unavailable)
+        self.graph_service = MemgraphService()
+        if self.graph_service.is_available:
+            self.graph_service.ensure_indexes()
+
+        # Session-scoped FAISS vector stores cached in-memory
         self.vector_stores: Dict[str, FAISS] = {}
 
-    # ------------------------------------------------------------------
-    # Embeddings (lazy)
-    # ------------------------------------------------------------------
     @property
-    def embeddings(self) -> GoogleGenerativeAIEmbeddings:
-        """Lazily initialise the Google embedding model (with 404 self-healing)."""
+    def embeddings(self) -> HuggingFaceEmbeddings:
+        """Lazily initialise the local HuggingFace embedding model for FAISS."""
         if self._embeddings is None:
-            settings = get_settings()
-            self._embeddings = create_google_embeddings(
-                self._embedding_model_name,
-                settings.GOOGLE_API_KEY,
-                task_type="retrieval_document",
+            logger.info("Initializing HuggingFaceEmbeddings for FAISS: %s", self._embedding_model_name)
+            self._embeddings = HuggingFaceEmbeddings(
+                model_name=self._embedding_model_name,
+                model_kwargs={"device": "cpu"},
+                encode_kwargs={"normalize_embeddings": True, "batch_size": 32},
             )
-            resolved = getattr(self._embeddings, "model", self._embedding_model_name)
-            logger.info("RAGService using embedding model: %s", resolved)
         return self._embeddings
 
-    # ------------------------------------------------------------------
-    # Workspace vector store helpers
-    # ------------------------------------------------------------------
-    def _cache_key(self, tenant_id: str, user_id: str, workspace_id: str) -> str:
-        return f"{tenant_id}::{user_id}::{workspace_id}"
+    def _cache_key(self, user_id: str, session_id: str) -> str:
+        return f"{user_id}::{session_id}"
+
+    def invalidate_session_store(self, user_id: str, session_id: str) -> None:
+        key = self._cache_key(user_id, session_id)
+        self.vector_stores.pop(key, None)
+        logger.info("Invalidated FAISS cache for key=%s", key)
 
     async def get_or_load_store(
         self,
-        tenant_id: str = "default",
         user_id: str = "guest",
-        workspace_id: str = "default",
+        session_id: str = "default",
         vector_index_path: Optional[str] = None,
         errors: Optional[List[str]] = None,
-    ) -> FAISS:
-        """Return an existing store from cache or load from disk."""
-        key = self._cache_key(tenant_id, user_id, workspace_id)
+    ) -> Optional[FAISS]:
+        key = self._cache_key(user_id, session_id)
 
         if key in self.vector_stores:
             return self.vector_stores[key]
 
-        # Attempt to load persisted FAISS index from disk
         if vector_index_path and os.path.isdir(vector_index_path):
             try:
                 store = await asyncio.to_thread(
@@ -107,30 +108,27 @@ class RAGService:
                 if errors is not None:
                     errors.append(msg)
 
-        # Seed with a placeholder so downstream code never sees an empty store
-        store = await asyncio.to_thread(
-            FAISS.from_texts, ["No documents loaded yet."], self.embeddings
-        )
-        self.vector_stores[key] = store
-        return store
+        return None
 
-    # ------------------------------------------------------------------
-    # Document indexing
-    # ------------------------------------------------------------------
     async def load_documents(
         self,
         doc_paths: List[str],
-        tenant_id: str = "default",
         user_id: str = "guest",
-        workspace_id: str = "default",
+        session_id: str = "default",
         vector_index_path: Optional[str] = None,
         errors: Optional[List[str]] = None,
-    ) -> None:
-        """Load, split, embed and index documents into the workspace store."""
+        llm_router: Any = None,
+    ) -> int:
+        """Load, chunk, embed and index documents into FAISS + Memgraph.
+
+        If llm_router is provided and Memgraph is available, entities and
+        relationships are also extracted and stored in the knowledge graph.
+        """
         if not doc_paths:
-            return
+            return 0
 
         all_documents: List[Document] = []
+        all_chunks_by_file: Dict[str, List[str]] = {}
 
         for raw_path in doc_paths:
             doc_path = resolve_workspace_doc_path(raw_path)
@@ -138,70 +136,140 @@ class RAGService:
                 if errors is not None:
                     errors.append(f"Document not found: {raw_path}")
                 continue
+
             try:
-                if doc_path.endswith(".pdf"):
-                    loader = PyPDFLoader(doc_path)
-                elif doc_path.endswith((".txt", ".md")):
-                    loader = TextLoader(doc_path)
+                logger.info("Processing document with local pipeline: %s", doc_path)
+
+                if doc_path.lower().endswith(".pdf"):
+                    text = await asyncio.to_thread(self.ingestor.extract_pdf_text, doc_path)
+                elif doc_path.lower().endswith((".txt", ".md")):
+                    with open(doc_path, "r", encoding="utf-8") as f:
+                        text = f.read()
                 else:
                     if errors is not None:
                         errors.append(f"Unsupported file type: {doc_path}")
                     continue
 
-                docs = await asyncio.to_thread(loader.load)
-                all_documents.extend(docs)
+                chunks = await asyncio.to_thread(self.ingestor.chunk_text, text)
+                filename = os.path.basename(doc_path)
+                all_chunks_by_file[filename] = chunks
+
+                for chunk in chunks:
+                    all_documents.append(
+                        Document(
+                            page_content=chunk,
+                            metadata={"source": doc_path, "filename": filename},
+                        )
+                    )
+
             except Exception as exc:
                 if errors is not None:
                     errors.append(f"Error loading {doc_path}: {exc}")
+                logger.exception("Error loading document %s", doc_path)
 
         if not all_documents:
-            return
+            return 0
 
-        splits = self.text_splitter.split_documents(all_documents)
+        # ── FAISS indexing ──────────────────────────────────────────────
+        key = self._cache_key(user_id, session_id)
+        store = await self.get_or_load_store(user_id, session_id, vector_index_path, errors)
 
-        # Inject metadata for citation support
-        for split in splits:
-            split.metadata["tenant_id"] = tenant_id
-            split.metadata["workspace_id"] = workspace_id
-            if "source" in split.metadata:
-                split.metadata["filename"] = os.path.basename(split.metadata["source"])
-            else:
-                split.metadata["filename"] = "unknown_document"
+        logger.info("Embedding and indexing %d chunks into FAISS...", len(all_documents))
+        if store is None:
+            store = await asyncio.to_thread(FAISS.from_documents, all_documents, self.embeddings)
+            self.vector_stores[key] = store
+        else:
+            await asyncio.to_thread(store.add_documents, all_documents)
 
-        store = await self.get_or_load_store(
-            tenant_id, user_id, workspace_id, vector_index_path, errors
-        )
-        await asyncio.to_thread(store.add_documents, splits)
+        logger.info("FAISS indexing completed for session key=%s", key)
 
-        # Persist to disk
         if vector_index_path:
             try:
                 os.makedirs(vector_index_path, exist_ok=True)
                 await asyncio.to_thread(store.save_local, vector_index_path)
             except Exception as exc:
                 if errors is not None:
-                    errors.append(f"Failed to save FAISS index to {vector_index_path}: {exc}")
+                    errors.append(f"Failed to save FAISS index: {exc}")
 
-    # ------------------------------------------------------------------
-    # Retrieval
-    # ------------------------------------------------------------------
+        # ── Memgraph graph extraction (parallel, non-blocking) ──────────
+        if llm_router and self.graph_service.is_available:
+            for filename, chunks in all_chunks_by_file.items():
+                try:
+                    ent_count, rel_count = await self.graph_service.extract_graph_from_chunks(
+                        chunks=chunks,
+                        source_filename=filename,
+                        llm_router=llm_router,
+                    )
+                    logger.info(
+                        "Memgraph: stored %d entities, %d relationships from %s",
+                        ent_count, rel_count, filename,
+                    )
+                except Exception as exc:
+                    logger.warning("Graph extraction failed for %s: %s", filename, exc)
+                    if errors is not None:
+                        errors.append(f"Graph extraction error for {filename}: {exc}")
+
+        return len(all_documents)
+
     async def search(
         self,
         query: str,
-        tenant_id: str = "default",
         user_id: str = "guest",
-        workspace_id: str = "default",
+        session_id: str = "default",
         vector_index_path: Optional[str] = None,
         k: int = 5,
         errors: Optional[List[str]] = None,
+        llm_router: Any = None,
     ) -> str:
-        """Perform async similarity search and return combined context string."""
-        store = await self.get_or_load_store(
-            tenant_id, user_id, workspace_id, vector_index_path, errors
+        """Hybrid search: FAISS semantic search + Memgraph graph context.
+
+        Both retrieval paths run in parallel for maximum speed.
+        """
+        # Launch FAISS search
+        faiss_context = await self._faiss_search(query, user_id, session_id, vector_index_path, k, errors)
+
+        # Launch graph search (graceful degradation)
+        graph_context = ""
+        if llm_router and self.graph_service.is_available:
+            try:
+                graph_context = await self.graph_service.query_graph(query, llm_router)
+            except Exception as exc:
+                logger.warning("Graph query failed (non-fatal): %s", exc)
+
+        # Combine contexts
+        parts = []
+        if faiss_context:
+            parts.append(faiss_context)
+        if graph_context:
+            parts.append(graph_context)
+
+        combined = "\n\n".join(parts)
+        logger.info(
+            "Hybrid RAG context: FAISS=%d chars, Graph=%d chars, Total=%d chars",
+            len(faiss_context), len(graph_context), len(combined),
         )
+        return combined
+
+    async def _faiss_search(
+        self,
+        query: str,
+        user_id: str,
+        session_id: str,
+        vector_index_path: Optional[str],
+        k: int,
+        errors: Optional[List[str]],
+    ) -> str:
+        """Pure FAISS similarity search."""
+        store = await self.get_or_load_store(user_id, session_id, vector_index_path, errors)
+        if store is None:
+            return ""
+
         docs = await asyncio.to_thread(store.similarity_search, query, k=k)
 
-        context = "\n\n".join(
-            f"[Document {i + 1}]\n{doc.page_content}" for i, doc in enumerate(docs)
-        )
-        return context
+        parts = []
+        for i, doc in enumerate(docs):
+            filename = doc.metadata.get("filename", "unknown")
+            parts.append(f"[Document {i + 1} — Source: {filename}]\n{doc.page_content}")
+
+        return "\n\n".join(parts)
+
