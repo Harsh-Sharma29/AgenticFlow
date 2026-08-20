@@ -423,7 +423,7 @@ export default function Home() {
       {/* Sidebar */}
       <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
         <div className="sidebar-header">
-          <div className="sidebar-logo">Nx</div>
+          <div className="sidebar-logo">AF</div>
           <div>
             <div className="sidebar-title">AgenticFlow</div>
             <div className="sidebar-subtitle">Orchestrator</div>
@@ -659,7 +659,7 @@ export default function Home() {
           
           {isLoading && (
             <div className="message-group">
-              <div className="message-avatar assistant">Nx</div>
+              <div className="message-avatar assistant">AF</div>
               <div className="message-body">
                 <div className="message-sender">
                   <span className="name">AgenticFlow</span>

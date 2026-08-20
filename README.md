@@ -1,5 +1,4 @@
 <div align="center">
-  <img src="./nexus-frontend/public/favicon.ico" alt="AgenticFlow Logo" width="100"/>
   <h1>AgenticFlow Orchestrator</h1>
   <p><strong>Enterprise-Grade AI Service Mesh & Multi-Agent Orchestrator</strong></p>
 
