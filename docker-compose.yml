@@ -13,13 +13,13 @@ services:
   # ── PostgreSQL (Relational Database) ──────────────────────────────
   postgres:
     image: pgvector/pgvector:pg15
-    container_name: nexus-postgres
+    container_name: agenticflow-postgres
     ports:
       - "5432:5432"
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
-      POSTGRES_DB: nexus
+      POSTGRES_DB: agenticflow
     volumes:
       - postgres-data:/var/lib/postgresql/data
     restart: unless-stopped
@@ -33,7 +33,7 @@ services:
   # ── Memgraph (Graph Database) ─────────────────────────────────────
   memgraph:
     image: memgraph/memgraph-mage:latest
-    container_name: nexus-memgraph
+    container_name: agenticflow-memgraph
     ports:
       - "7687:7687"
       - "7444:7444"
@@ -53,14 +53,14 @@ services:
     build:
       context: .                      # Project root (backend imports use backend.app.*)
       dockerfile: backend/Dockerfile
-    container_name: nexus-backend
+    container_name: agenticflow-backend
     ports:
       - "8005:8005"
     env_file:
       - .env
     environment:
       - PYTHONUNBUFFERED=1
-      - POSTGRES_URI=postgresql://postgres:password@postgres:5432/nexus
+      - POSTGRES_URI=postgresql://postgres:password@postgres:5432/agenticflow
     volumes:
       - backend-data:/app/data        # Persist standard files
       - ./backend:/app/backend        # Hot reload backend source
@@ -84,7 +84,7 @@ services:
     build:
       context: ./nexus-frontend
       dockerfile: Dockerfile
-    container_name: nexus-frontend
+    container_name: agenticflow-frontend
     ports:
       - "3005:3000"
     environment:

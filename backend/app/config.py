@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     MEMGRAPH_URI: str = "bolt://localhost:7687"
 
     # ── PostgreSQL persistence ───────────────────────────────────────────
-    POSTGRES_URI: str = "postgresql://postgres:password@localhost:5432/nexus"
+    POSTGRES_URI: str = "postgresql://postgres:password@localhost:5432/agenticflow"
 
     # ── SQLite persistence (Deprecated) ──────────────────────────────────
     SQLITE_DB_PATH: str = "memory.db"

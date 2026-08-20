@@ -52,7 +52,7 @@ The entire system runs as a multi-container Docker mesh, ensuring exact parity b
 
 ```mermaid
 graph TD
-    UI[Next.js Premium UI <br/> :3005] -->|REST / JSON| GW(FastAPI Gateway <br/> :8000)
+    UI[Next.js Premium UI <br/> :3005] -->|REST / JSON| GW(FastAPI Gateway <br/> :8005)
     
     GW -->|Validate JWT / X-Guest-ID| Auth{Security Layer}
     Auth -->|Route| ORCH[LangGraph Orchestrator]
