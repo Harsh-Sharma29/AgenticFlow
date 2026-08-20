@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════
-# Nexus AI Orchestrator – Docker Compose
+# AgenticFlow Orchestrator – Docker Compose
 # ═══════════════════════════════════════════════════════════════════
 # Usage:
 #   docker compose up --build        # Build & start all services
@@ -10,6 +10,26 @@
 
 
 services:
+  # ── PostgreSQL (Relational Database) ──────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: nexus-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: nexus
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   # ── Memgraph (Graph Database) ─────────────────────────────────────
   memgraph:
     image: memgraph/memgraph-mage:latest
@@ -24,8 +44,9 @@ services:
       test: ["CMD-SHELL", "echo 'RETURN 1;' | mgconsole || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 5
-      start_period: 10s
+      retries: 10
+      start_period: 60s
+
 
   # ── FastAPI Backend ──────────────────────────────────────────────
   backend:
@@ -39,13 +60,16 @@ services:
       - .env
     environment:
       - PYTHONUNBUFFERED=1
-      - SQLITE_DB_PATH=/app/data/memory.db
-      - MEMGRAPH_URI=bolt://memgraph:7687
+      - POSTGRES_URI=postgresql://postgres:password@postgres:5432/nexus
     volumes:
-      - backend-data:/app/data        # Persist SQLite + FAISS indexes
+      - backend-data:/app/data        # Persist standard files
+      - ./backend:/app/backend        # Hot reload backend source
       - ./workspaces:/app/workspaces  # Shared workspace files (uploads)
+    command: ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8005"]
     restart: unless-stopped
     depends_on:
+      postgres:
+        condition: service_healthy
       memgraph:
         condition: service_healthy
     healthcheck:
@@ -74,5 +98,7 @@ volumes:
   backend-data:
     driver: local
   memgraph-data:
+    driver: local
+  postgres-data:
     driver: local
 

@@ -1,4 +1,4 @@
-"""Centralized configuration for the Nexus AI Orchestrator backend.
+"""Centralized configuration for the AgenticFlow Orchestrator backend.
 
 Loads all environment variables via python-dotenv and exposes them
 through a validated Pydantic settings object for type-safe access.
@@ -48,14 +48,17 @@ class Settings(BaseSettings):
     # Bare model id — LangChain adds a single ``models/`` prefix (avoid models/models/…)
     EMBEDDING_MODEL: str = "gemini-embedding-001"
 
-    # ── RAG / FAISS ──────────────────────────────────────────────────────
+    # ── RAG / PGVector ───────────────────────────────────────────────────
     FAISS_CHUNK_SIZE: int = 1000
     FAISS_CHUNK_OVERLAP: int = 200
 
     # ── Graph Database (Memgraph) ─────────────────────────────────────────
     MEMGRAPH_URI: str = "bolt://localhost:7687"
 
-    # ── SQLite persistence ───────────────────────────────────────────────
+    # ── PostgreSQL persistence ───────────────────────────────────────────
+    POSTGRES_URI: str = "postgresql://postgres:password@localhost:5432/nexus"
+
+    # ── SQLite persistence (Deprecated) ──────────────────────────────────
     SQLITE_DB_PATH: str = "memory.db"
 
     # ── CORS ─────────────────────────────────────────────────────────────
@@ -69,6 +72,9 @@ class Settings(BaseSettings):
     # ── Web Search / Other APIs ──────────────────────────────────────────
     TAVILY_API_KEY: str = ""
     NVIDIA_API_KEY: str = ""
+
+    # ── Security ─────────────────────────────────────────────────────────
+    JWT_SECRET: str = "super-secret-key-12345"
 
     class Config:
         env_file = ".env"

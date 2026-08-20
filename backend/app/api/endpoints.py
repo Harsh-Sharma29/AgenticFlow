@@ -13,12 +13,13 @@ import os
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend.app.agents.graph import app_graph
 from backend.app.agents.state import normalize_state
+from backend.app.api.dependencies import get_current_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -69,14 +70,14 @@ async def health_check():
 
 
 @router.get("/sessions")
-async def get_sessions(user_id: str = "guest", workspace_id: str = "default"):
+async def get_sessions(workspace_id: str = "default", user_id: str = Depends(get_current_user_id)):
     from backend.app.services.storage import list_chat_sessions
     sessions = await list_chat_sessions(user_id, workspace_id)
     return {"sessions": sessions}
 
 
 @router.get("/sessions/{session_id}")
-async def get_session_history(session_id: str, user_id: str = "guest", workspace_id: str = "default"):
+async def get_session_history(session_id: str, workspace_id: str = "default", user_id: str = Depends(get_current_user_id)):
     from backend.app.services.storage import load_chat_messages
     history = await load_chat_messages(user_id, workspace_id, session_id, limit=50)
     return {"messages": history}
@@ -86,14 +87,14 @@ class SessionRenameRequest(BaseModel):
     name: str
 
 @router.put("/sessions/{session_id}")
-async def rename_session(session_id: str, req: SessionRenameRequest, user_id: str = "guest", workspace_id: str = "default"):
+async def rename_session(session_id: str, req: SessionRenameRequest, workspace_id: str = "default", user_id: str = Depends(get_current_user_id)):
     from backend.app.services.storage import rename_chat_session
     await rename_chat_session(user_id, workspace_id, session_id, req.name)
     return {"status": "renamed"}
 
 
 @router.delete("/sessions/{session_id}")
-async def delete_session(session_id: str, user_id: str = "guest", workspace_id: str = "default"):
+async def delete_session(session_id: str, workspace_id: str = "default", user_id: str = Depends(get_current_user_id)):
     from backend.app.services.storage import delete_chat_session
     await delete_chat_session(user_id, workspace_id, session_id)
     return {"status": "deleted"}
@@ -101,7 +102,7 @@ async def delete_session(session_id: str, user_id: str = "guest", workspace_id: 
 
 
 @router.post("/upload")
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(file: UploadFile = File(...), user_id: str = Depends(get_current_user_id)):
     import os
     import shutil
     upload_dir = "/app/data/uploads"
@@ -115,7 +116,7 @@ async def upload_document(file: UploadFile = File(...)):
 
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, user_id: str = Depends(get_current_user_id)):
     """Main conversational endpoint.
 
     Accepts a user message, runs the full LangGraph orchestrator
@@ -126,8 +127,8 @@ async def chat(req: ChatRequest):
     # Build the input state delta
     input_state: Dict[str, Any] = {
         "tenant_id": req.tenant_id,
-        "user_id": req.user_id,
-        "is_guest": req.user_id == "guest",
+        "user_id": user_id,
+        "is_guest": user_id == "guest",
         "session_id": session_id,
         "user_query": req.message,
         "workspace_id": req.workspace_id,
@@ -160,14 +161,14 @@ async def chat(req: ChatRequest):
 
 
 @router.post("/chat/stream")
-async def chat_stream(req: ChatRequest):
+async def chat_stream(req: ChatRequest, user_id: str = Depends(get_current_user_id)):
     """Streaming conversational endpoint using Server-Sent Events."""
     session_id = req.session_id or str(uuid.uuid4())
 
     input_state: Dict[str, Any] = {
         "tenant_id": req.tenant_id,
-        "user_id": req.user_id,
-        "is_guest": req.user_id == "guest",
+        "user_id": user_id,
+        "is_guest": user_id == "guest",
         "session_id": session_id,
         "user_query": req.message,
         "workspace_id": req.workspace_id,

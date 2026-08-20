@@ -15,12 +15,73 @@ export default function Home() {
   const [sessions, setSessions] = useState([]);
   const [currentSessionId, setCurrentSessionId] = useState(null);
   const [workspaceId] = useState('default');
+  const [user, setUser] = useState(null);
+  const [token, setToken] = useState(null);
+  const [guestMessageCount, setGuestMessageCount] = useState(0);
+  const [showPaywall, setShowPaywall] = useState(false);
+  const [shareStatus, setShareStatus] = useState('');
+  const [theme, setTheme] = useState('dark');
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
 
+  useEffect(() => {
+    const savedTheme = localStorage.getItem('agenticflow_theme');
+    if (savedTheme) {
+      setTheme(savedTheme);
+      document.documentElement.className = savedTheme;
+    } else {
+      document.documentElement.className = 'dark';
+    }
+  }, []);
+
+  const toggleTheme = () => {
+    const newTheme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(newTheme);
+    localStorage.setItem('agenticflow_theme', newTheme);
+    document.documentElement.className = newTheme;
+  };
+
+  useEffect(() => {
+    const savedToken = localStorage.getItem('agenticflow_token');
+    const savedUser = localStorage.getItem('agenticflow_user');
+    const savedGuestCount = localStorage.getItem('agenticflow_guest_count');
+    
+    if (savedToken && savedUser) {
+      setToken(savedToken);
+      setUser(JSON.parse(savedUser));
+    }
+    if (savedGuestCount) {
+      setGuestMessageCount(parseInt(savedGuestCount, 10));
+    }
+  }, []);
+
+  const getGuestId = () => {
+    let gid = localStorage.getItem('agenticflow_guest_id');
+    if (!gid) {
+      gid = 'guest_' + crypto.randomUUID();
+      localStorage.setItem('agenticflow_guest_id', gid);
+    }
+    return gid;
+  };
+
+  const authHeaders = () => {
+    return token ? { 'Authorization': `Bearer ${token}` } : { 'X-Guest-ID': getGuestId() };
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('agenticflow_token');
+    localStorage.removeItem('agenticflow_user');
+    setToken(null);
+    setUser(null);
+    setSessions([]);
+    startNewChat();
+  };
+
   const fetchSessions = async (ws) => {
     try {
-      const res = await fetch(`http://127.0.0.1:8005/api/sessions?workspace_id=${ws}`);
+      const res = await fetch(`http://127.0.0.1:8005/api/sessions?workspace_id=${ws}`, {
+        headers: authHeaders()
+      });
       if (res.ok) {
         const data = await res.json();
         setSessions(data.sessions || []);
@@ -31,14 +92,20 @@ export default function Home() {
   };
 
   useEffect(() => {
-    fetchSessions(workspaceId);
-  }, [workspaceId]);
+    if (token) {
+      fetchSessions(workspaceId);
+    } else {
+      setSessions([]);
+    }
+  }, [workspaceId, token]);
 
   const loadSession = async (sessionId) => {
     try {
       setIsLoading(true);
       setLoadingStatus('Loading session...');
-      const res = await fetch(`http://127.0.0.1:8005/api/sessions/${sessionId}?workspace_id=${workspaceId}`);
+      const res = await fetch(`http://127.0.0.1:8005/api/sessions/${sessionId}?workspace_id=${workspaceId}`, {
+        headers: authHeaders()
+      });
       if (res.ok) {
         const data = await res.json();
         setMessages(data.messages || []);
@@ -66,7 +133,7 @@ export default function Home() {
       try {
         await fetch(`http://127.0.0.1:8005/api/sessions/${sessionId}?workspace_id=${workspaceId}`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
           body: JSON.stringify({ name: newName.trim() })
         });
         fetchSessions(workspaceId);
@@ -81,7 +148,8 @@ export default function Home() {
     if (confirm('Are you sure you want to delete this chat session?')) {
       try {
         await fetch(`http://127.0.0.1:8005/api/sessions/${sessionId}?workspace_id=${workspaceId}`, {
-          method: 'DELETE'
+          method: 'DELETE',
+          headers: authHeaders()
         });
         if (currentSessionId === sessionId) {
           startNewChat();
@@ -113,6 +181,7 @@ export default function Home() {
     try {
       const res = await fetch('http://127.0.0.1:8005/api/upload', {
         method: 'POST',
+        headers: authHeaders(),
         body: formData,
       });
       if (!res.ok) throw new Error('Upload failed');
@@ -133,9 +202,86 @@ export default function Home() {
     setUploadedFiles(prev => prev.filter((_, i) => i !== index));
   };
 
+  const handleShareChat = async () => {
+    if (messages.length === 0) return;
+    
+    // Format messages for sharing
+    const chatText = messages.map(m => {
+      const role = m.role === 'user' ? 'User' : 'AgenticFlow';
+      return `**${role}**:\n${m.content}\n`;
+    }).join('\n---\n\n');
+    
+    try {
+      await navigator.clipboard.writeText(chatText);
+      setShareStatus('Copied to clipboard!');
+      setTimeout(() => setShareStatus(''), 2000);
+    } catch (err) {
+      console.error('Failed to copy', err);
+      setShareStatus('Failed to copy');
+      setTimeout(() => setShareStatus(''), 2000);
+    }
+  };
+
+  const handleExportPDF = async () => {
+    if (messages.length === 0) return;
+    setShareStatus('Generating PDF...');
+    
+    try {
+      const html2pdf = (await import('html2pdf.js')).default;
+      const element = document.querySelector('.chat-messages');
+      const opt = {
+        margin:       10,
+        filename:     'agenticflow-chat.pdf',
+        image:        { type: 'jpeg', quality: 0.98 },
+        html2canvas:  { scale: 2, useCORS: true },
+        jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' }
+      };
+      await html2pdf().set(opt).from(element).save();
+      setShareStatus('Downloaded!');
+    } catch (err) {
+      console.error('Failed to export PDF', err);
+      setShareStatus('Export failed');
+    }
+    setTimeout(() => setShareStatus(''), 3000);
+  };
+
+  // Group sessions by date
+  const groupedSessions = (() => {
+    const groups = { 'Today': [], 'Yesterday': [], 'Previous 7 Days': [], 'Older': [] };
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const sevenDaysAgo = new Date(today);
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+    sessions.forEach(s => {
+      const dStr = s.created_at || s.updated_at;
+      const date = dStr ? new Date(dStr) : new Date(); 
+      date.setHours(0,0,0,0);
+      
+      if (date.getTime() === today.getTime()) {
+        groups['Today'].push(s);
+      } else if (date.getTime() === yesterday.getTime()) {
+        groups['Yesterday'].push(s);
+      } else if (date > sevenDaysAgo) {
+        groups['Previous 7 Days'].push(s);
+      } else {
+        groups['Older'].push(s);
+      }
+    });
+    return groups;
+  })();
+
   const handleSubmit = async (e) => {
-    e?.preventDefault();
-    if (!input.trim() || isLoading) return;
+    e.preventDefault();
+    if (!input.trim() && uploadedFiles.length === 0) return;
+
+    // Soft Paywall for Guests
+    if (!user && guestMessageCount >= 5) {
+      setShowPaywall(true);
+      return;
+    }
 
     const userMessage = { 
       role: 'user', 
@@ -149,6 +295,13 @@ export default function Home() {
     setIsLoading(true);
     setLoadingStatus('Connecting to agent...');
 
+    // Increment guest count
+    if (!user) {
+      const newCount = guestMessageCount + 1;
+      setGuestMessageCount(newCount);
+      localStorage.setItem('agenticflow_guest_count', newCount);
+    }
+
     const sessionIdToUse = currentSessionId || crypto.randomUUID();
     if (!currentSessionId) setCurrentSessionId(sessionIdToUse);
 
@@ -156,10 +309,10 @@ export default function Home() {
       // Direct call to FastAPI backend streaming endpoint
       const res = await fetch('http://127.0.0.1:8005/api/chat/stream', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ 
           message: userMessage.content,
-          user_id: 'guest',
+          user_id: user ? user.id : getGuestId(),
           workspace_id: workspaceId,
           session_id: sessionIdToUse,
           tenant_id: 'default',
@@ -272,7 +425,7 @@ export default function Home() {
         <div className="sidebar-header">
           <div className="sidebar-logo">Nx</div>
           <div>
-            <div className="sidebar-title">Nexus AI</div>
+            <div className="sidebar-title">AgenticFlow</div>
             <div className="sidebar-subtitle">Orchestrator</div>
           </div>
         </div>
@@ -286,21 +439,29 @@ export default function Home() {
         </button>
 
         <div className="session-list">
-          <div className="session-section-label">Recent Sessions</div>
-          {sessions.map(s => (
-            <div 
-              key={s.session_id} 
-              className={`session-item ${currentSessionId === s.session_id ? 'active' : ''}`}
-              onClick={() => loadSession(s.session_id)}
-            >
-              <span className="session-item-icon">💬</span>
-              <span className="session-item-text">{s.name}</span>
-              <div className="session-item-actions">
-                <button onClick={(e) => handleRenameSession(e, s.session_id, s.name)} title="Rename">✏️</button>
-                <button onClick={(e) => handleDeleteSession(e, s.session_id)} title="Delete">🗑️</button>
+          {Object.entries(groupedSessions).map(([label, items]) => {
+            if (items.length === 0) return null;
+            return (
+              <div key={label} className="session-group">
+                <div className="session-section-label">{label}</div>
+                {items.map(s => (
+                  <div 
+                    key={s.session_id} 
+                    className={`session-item ${currentSessionId === s.session_id ? 'active' : ''}`}
+                    onClick={() => loadSession(s.session_id)}
+                  >
+                    <span className="session-item-icon">💬</span>
+                    <span className="session-item-text">{s.name}</span>
+                    <div className="session-item-actions">
+                      <button onClick={(e) => handleRenameSession(e, s.session_id, s.name)} title="Rename">✏️</button>
+                      <button onClick={(e) => handleDeleteSession(e, s.session_id)} title="Delete">🗑️</button>
+                    </div>
+                  </div>
+                ))}
               </div>
-            </div>
-          ))}
+            );
+          })}
+          
           {sessions.length === 0 && (
             <div className="session-item" style={{opacity: 0.5}}>
               <span className="session-item-text">No recent chats</span>
@@ -309,9 +470,20 @@ export default function Home() {
         </div>
         
         <div className="sidebar-footer">
-          <div className="sidebar-footer-item">
-            <span>⚙️</span> Settings
-          </div>
+          {user ? (
+            <>
+              <div className="sidebar-footer-item" style={{cursor: 'default'}}>
+                <span>👤</span> {user.name || 'User'}
+              </div>
+              <div className="sidebar-footer-item" onClick={handleLogout}>
+                <span>🚪</span> Logout
+              </div>
+            </>
+          ) : (
+            <div className="sidebar-footer-item" onClick={() => window.location.href = '/login'}>
+              <span>🔑</span> Sign In / Register
+            </div>
+          )}
         </div>
       </aside>
 
@@ -323,11 +495,47 @@ export default function Home() {
             <button className="header-icon-btn d-md-none" onClick={toggleSidebar} style={{ display: 'none' }}>
               ≡
             </button>
-            <div className="chat-header-title">Nexus Orchestrator</div>
+            <div className="chat-header-title">AgenticFlow Orchestrator</div>
             <div className="chat-header-badge">Enterprise Edition</div>
           </div>
-          <div className="chat-header-right">
-            <button className="header-icon-btn" title="Model Info">ℹ️</button>
+          <div className="chat-header-right" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            {shareStatus && <span style={{ fontSize: '12px', color: '#10b981', fontWeight: 500 }}>{shareStatus}</span>}
+            
+            <button className="header-icon-btn" title="Toggle Theme" onClick={toggleTheme}>
+              {theme === 'dark' ? (
+                <svg stroke="currentColor" fill="none" strokeWidth="2" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round" height="18" width="18" xmlns="http://www.w3.org/2000/svg">
+                  <circle cx="12" cy="12" r="5"></circle>
+                  <line x1="12" y1="1" x2="12" y2="3"></line>
+                  <line x1="12" y1="21" x2="12" y2="23"></line>
+                  <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                  <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                  <line x1="1" y1="12" x2="3" y2="12"></line>
+                  <line x1="21" y1="12" x2="23" y2="12"></line>
+                  <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+                  <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+                </svg>
+              ) : (
+                <svg stroke="currentColor" fill="none" strokeWidth="2" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round" height="18" width="18" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+                </svg>
+              )}
+            </button>
+            
+            <button className="header-icon-btn" title="Export to PDF" onClick={handleExportPDF}>
+              <svg stroke="currentColor" fill="none" strokeWidth="2" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round" height="18" width="18" xmlns="http://www.w3.org/2000/svg">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+              </svg>
+            </button>
+            
+            <button className="header-icon-btn" title="Share Chat" onClick={handleShareChat}>
+              <svg stroke="currentColor" fill="none" strokeWidth="2" viewBox="0 0 24 24" strokeLinecap="round" strokeLinejoin="round" height="18" width="18" xmlns="http://www.w3.org/2000/svg">
+                <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"></path>
+                <polyline points="16 6 12 2 8 6"></polyline>
+                <line x1="12" y1="2" x2="12" y2="15"></line>
+              </svg>
+            </button>
           </div>
         </header>
 
@@ -335,11 +543,32 @@ export default function Home() {
         <div className="chat-messages">
           {messages.length === 0 ? (
             <div className="welcome-screen">
-              <div className="welcome-icon">🤖</div>
-              <h1 className="welcome-title">How can I help you today?</h1>
+              <div className="welcome-icon logo-glow" style={{ marginBottom: '20px' }}>
+                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M12 2L2 7L12 12L22 7L12 2Z" fill="url(#paint0_linear)" />
+                  <path d="M2 17L12 22L22 17" stroke="url(#paint1_linear)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  <path d="M2 12L12 17L22 12" stroke="url(#paint2_linear)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  <defs>
+                    <linearGradient id="paint0_linear" x1="2" y1="7" x2="22" y2="7" gradientUnits="userSpaceOnUse">
+                      <stop stopColor="#F97316"/>
+                      <stop offset="1" stopColor="#EA580C"/>
+                    </linearGradient>
+                    <linearGradient id="paint1_linear" x1="2" y1="19.5" x2="22" y2="19.5" gradientUnits="userSpaceOnUse">
+                      <stop stopColor="#FDBA74"/>
+                      <stop offset="1" stopColor="#F97316"/>
+                    </linearGradient>
+                    <linearGradient id="paint2_linear" x1="2" y1="14.5" x2="22" y2="14.5" gradientUnits="userSpaceOnUse">
+                      <stop stopColor="#FDBA74"/>
+                      <stop offset="1" stopColor="#F97316"/>
+                    </linearGradient>
+                  </defs>
+                </svg>
+              </div>
+              <h1 className="welcome-title text-transparent bg-clip-text" style={{ backgroundImage: 'var(--accent-gradient)' }}>
+                How can I help you today?
+              </h1>
               <p className="welcome-subtitle">
-                Nexus is an enterprise-grade AI orchestrator. I can analyze documents (RAG), 
-                run SQL queries, execute code, and perform web research.
+                I am your intelligent orchestration engine. I can synthesize documents, execute data queries, and conduct live web research.
               </p>
               
               <div className="suggestions-grid">
@@ -365,11 +594,11 @@ export default function Home() {
             messages.map((msg, idx) => (
               <div key={idx} className="message-group">
                 <div className={`message-avatar ${msg.role}`}>
-                  {msg.role === 'user' ? 'U' : 'Nx'}
+                  {msg.role === 'user' ? 'U' : 'AF'}
                 </div>
                 <div className="message-body">
                   <div className="message-sender">
-                    <span className="name">{msg.role === 'user' ? 'You' : 'Nexus AI'}</span>
+                    <span className="name">{msg.role === 'user' ? 'You' : 'AgenticFlow'}</span>
                     <span className="timestamp">
                       {new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
                     </span>
@@ -406,9 +635,16 @@ export default function Home() {
 
                   {msg.role === 'assistant' && msg.intent && (
                     <div className="message-meta">
-                      <span className={`meta-badge intent-${msg.intent}`}>
-                        {msg.intent} Agent
-                      </span>
+                      {msg.intent === 'research' && (
+                        <span className="meta-badge badge-research" style={{background: 'linear-gradient(to right, #3b82f6, #14b8a6)', color: 'white', border: 'none'}}>
+                          🌐 Browsing Web
+                        </span>
+                      )}
+                      {msg.intent !== 'research' && (
+                        <span className={`meta-badge intent-${msg.intent}`}>
+                          {msg.intent} Agent
+                        </span>
+                      )}
                       {msg.model && (
                         <span className="meta-model">
                           Model: {msg.model} {msg.fallback ? '(Fallback used)' : ''}
@@ -426,7 +662,7 @@ export default function Home() {
               <div className="message-avatar assistant">Nx</div>
               <div className="message-body">
                 <div className="message-sender">
-                  <span className="name">Nexus AI</span>
+                  <span className="name">AgenticFlow</span>
                 </div>
                 <div className="typing-indicator">
                   <div className="typing-dots">
@@ -475,7 +711,7 @@ export default function Home() {
               
               <textarea 
                 className="chat-input"
-                placeholder="Ask Nexus anything (RAG, SQL, Code, Research)..."
+                placeholder="Ask AgenticFlow anything (RAG, SQL, Code, Research)..."
                 value={input}
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={e => {
@@ -507,6 +743,42 @@ export default function Home() {
           </div>
         </div>
       </main>
+
+      {/* Soft Paywall Modal */}
+      {showPaywall && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(10px)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999
+        }}>
+          <div style={{
+            background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
+            padding: '40px', borderRadius: '24px', maxWidth: '400px', textAlign: 'center',
+            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)'
+          }}>
+            <h2 style={{ fontSize: '24px', fontWeight: 'bold', marginBottom: '16px', background: 'linear-gradient(to right, #FDBA74, #F97316)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
+              Guest Limit Reached
+            </h2>
+            <p style={{ color: '#9ca3af', marginBottom: '32px', lineHeight: '1.5' }}>
+              You&apos;ve sent 5 messages as a guest. To continue chatting and save your documents permanently, please create a free account.
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <button 
+                onClick={() => window.location.href = '/register'}
+                style={{ background: 'linear-gradient(to right, #EA580C, #C2410C)', color: 'white', padding: '12px', borderRadius: '12px', border: 'none', cursor: 'pointer', fontWeight: '500' }}
+              >
+                Create Free Account
+              </button>
+              <button 
+                onClick={() => window.location.href = '/login'}
+                style={{ background: 'transparent', color: '#9ca3af', padding: '12px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.1)', cursor: 'pointer', fontWeight: '500' }}
+              >
+                Sign In
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

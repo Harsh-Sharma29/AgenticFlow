@@ -14,7 +14,8 @@ WORKDIR /app
 
 # Install Python dependencies first (layer caching)
 COPY backend/requirements.txt /app/backend/requirements.txt
-RUN pip install --no-cache-dir -r /app/backend/requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r /app/backend/requirements.txt
 
 # Copy backend source + root .env
 COPY backend/ /app/backend/

@@ -1,199 +1,135 @@
-# Nexus AI Orchestrator — Production-Ready Multi-Container AI Service Mesh
+<div align="center">
+  <img src="./nexus-frontend/public/favicon.ico" alt="AgenticFlow Logo" width="100"/>
+  <h1>AgenticFlow Orchestrator</h1>
+  <p><strong>Enterprise-Grade AI Service Mesh & Multi-Agent Orchestrator</strong></p>
 
-[![Production](https://img.shields.io/badge/status-live-success?style=for-the-badge)](https://nexus-ai-orchestrator.scholarme.in/)
-[![Docker](https://img.shields.io/badge/orchestration-docker--compose-2496ED?style=for-the-badge&logo=docker&logoColor=white)](./docker-compose.yml)
-[![FastAPI](https://img.shields.io/badge/backend-FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)](./backend/app/main.py)
-[![LangGraph](https://img.shields.io/badge/workflow-LangGraph-1C3C3C?style=for-the-badge)](./backend/app/agents/graph.py)
+  [![Production](https://img.shields.io/badge/status-live-success?style=for-the-badge)](https://agenticflow.scholarme.in/)
+  [![Docker](https://img.shields.io/badge/orchestration-docker--compose-2496ED?style=for-the-badge&logo=docker&logoColor=white)](./docker-compose.yml)
+  [![FastAPI](https://img.shields.io/badge/backend-FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)](./backend/app/main.py)
+  [![LangGraph](https://img.shields.io/badge/workflow-LangGraph-1C3C3C?style=for-the-badge)](./backend/app/agents/graph.py)
+  [![Next.js](https://img.shields.io/badge/frontend-Next.js-000000?style=for-the-badge&logo=next.js&logoColor=white)](./nexus-frontend/)
+</div>
 
-> **🌐 Live App:** [https://nexus-ai-orchestrator.scholarme.in/](https://nexus-ai-orchestrator.scholarme.in/)
+<br/>
 
-### ✨ UI & Execution Preview
+> **🌐 Live Production URL:** [https://agenticflow.scholarme.in/](https://agenticflow.scholarme.in/)
 
-![Nexus AI Orchestrator Dashboard](./workspaces/preview.png)
-
-| **Frontend (Next.js)** | Enterprise UI, workspace management, document upload, session UX — communicates only via REST |
-| **Backend (FastAPI)** | Async API gateway, request lifecycle, health checks, CORS, persistence orchestration |
-| **Graph Engine (LangGraph)** | Intent routing, multi-agent execution (RAG, SQL, Code, Research, Chat), retries, approval gates |
-| **Data Plane** | SQLite chat/workspaces, FAISS vector indexes, per-tenant document isolation |
-
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                    Next.js Frontend  (:3000)                             │
-│              Modern React UI — no LangGraph / LLM imports                │
-└───────────────────────────────┬──────────────────────────────────────────┘
-                                │  REST (API_BASE_URL)
-                                ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│                    FastAPI Backend  (:8000)                              │
-│         Endpoints · Services · SQLite · RAG · LLM routing                │
-└───────────────────────────────┬──────────────────────────────────────────┘
-                                │
-                                ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│         LangGraph Orchestrator  (backend/app — StateGraph workflow)      │
-│   IntentRouter → Agent execution → Approval / Retry → Persist context    │
-└──────────────────────────────────────────────────────────────────────────┘
-```
-
-This architecture keeps the UI **thread-safe and responsive** while graph nodes, embeddings, and LLM calls execute in the **background worker process** — the pattern required for production-grade AI platforms at scale.
+**AgenticFlow** is a highly scalable, fully containerized AI orchestrator that dynamically routes complex intents to specialized AI agents. Built entirely on a modern service mesh architecture, it securely isolates user data, maintains strict access control, and delivers state-of-the-art responses through **Hybrid Retrieval (Vector + Graph)**, Web Research, and dynamic SQL querying.
 
 ---
 
-## 🐳 Production-Grade Architecture Features
+## 🚀 Key Innovations & Features
 
-### Multi-Container Orchestration
+### 1. 🧠 Autonomous Multi-Agent Routing (LangGraph)
+Unlike standard linear chatbots, AgenticFlow uses a sophisticated state machine built with **LangGraph**. User queries are automatically analyzed and routed to the most capable agent:
+- **RAG Agent:** Ingests and synthesizes information from uploaded documents.
+- **SQL Agent:** Analyzes requirements and dynamically generates valid SQL queries (without direct execution against production databases).
+- **Research Agent:** Conducts live web research via Tavily API to fetch real-time data.
+- **Code Agent:** Executes sandboxed Python code for complex mathematical or programmatic logic.
 
-The entire application mesh is **fully containerized** and managed through **`docker-compose`**. Two services — `backend` (FastAPI + LangGraph) and `frontend` (Next.js) — are built, networked, and started as a single declarative stack. Persistent volumes mount SQLite and FAISS data; shared `./workspaces` binds document uploads across containers.
+### 2. 🗄️ Hybrid Knowledge Engine (pgvector + Memgraph)
+AgenticFlow implements a dual-database intelligence layer:
+- **PostgreSQL (pgvector):** Handles semantic similarity search, dense vector embeddings, and persistent chat histories.
+- **Memgraph (Knowledge Graphs):** Maps complex entity relationships, allowing the LLM to traverse highly connected data points that standard vector search misses.
 
-### Microservice Isolation
+### 3. 🔐 Enterprise Security & Data Isolation
+Security is built into the foundation of the orchestrator, ensuring zero cross-tenant data leakage:
+- **Strict User-Based Isolation:** Every document embedded, every SQL query executed, and every chat session is strictly partitioned by `user_id`. A user can *never* access another user's vector space.
+- **JWT Authentication:** Cryptographically secure login and registration utilizing `bcrypt` hashing and HTTP Bearer tokens.
+- **Guest Sandboxing:** Unauthenticated visitors receive a unique `X-Guest-ID`. Their sessions are aggressively rate-limited (e.g., 5 messages max) and completely isolated in memory before prompting for account creation.
 
-**Independent layer separation** ensures the Next.js UI never loads LangGraph, FAISS, or agent runtimes in production. The frontend issues HTTP requests to the API; the **backend worker** owns all AI orchestration under `backend/app/`. This boundary guarantees **thread-safe UI behavior** and eliminates blocking the Node.js event loop on long-running graph invocations.
-
-### Live Cloud Infrastructure Deployment
-
-Nexus AI is deployed on a **production AWS EC2** instance (`t3.medium`), sized for concurrent API + UI workloads with predictable CPU and memory headroom. Traffic is **reverse-proxied** under a secure **custom corporate subdomain** (`nexus-ai-orchestrator.scholarme.in`), providing TLS termination, stable public routing, and enterprise-ready network mapping without exposing raw container ports to end users.
-
-| Concern | Implementation |
-|---------|----------------|
-| Compute | AWS EC2 `t3.medium` |
-| Packaging | Docker multi-stage builds per service |
-| Orchestration | `docker-compose` with health checks & `depends_on` |
-| Persistence | Named volume `backend-data` + host `workspaces/` |
-| Public access | Reverse proxy → custom subdomain (HTTPS) |
+### 4. 🎨 Premium Modern Frontend
+The UI isn't just an afterthought—it's a massive competitive advantage:
+- Built on **Next.js (React 18)** for blazing-fast SSR and hydration.
+- Features a custom **Warm Charcoal & Sophisticated Orange** aesthetic with smooth glassmorphism, micro-animations, and dynamic gradients.
+- **Thread-safe Execution:** The UI operates independently, communicating with the heavy LangGraph nodes purely via async REST APIs to prevent event-loop blocking.
 
 ---
 
-## 📂 Repository Directory Layout
+## 🏗️ Architecture Mesh
 
-Containerized production code lives under **`backend/app/`** and **`frontend/`**. Root-level assets are limited to Compose configuration, shared workspace storage, and legacy local-dev references.
+The entire system runs as a multi-container Docker mesh, ensuring exact parity between local development and AWS production.
 
-```
-Nexus-ai-orchestrator/
-├── docker-compose.yml              # Multi-container stack (backend + frontend)
-├── .dockerignore
-├── .streamlit/
-│   └── config.toml                 # Streamlit theme / server settings
-│
-├── backend/                        # FastAPI + LangGraph worker image
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   └── app/                        # All core AI orchestration (production path)
-│       ├── main.py                 # FastAPI entrypoint, CORS, routers
-│       ├── config.py               # Pydantic settings & .env loading
-│       ├── api/
-│       │   └── endpoints.py        # REST API surface (/api/chat, /api/health)
-│       ├── orchestrator/
-│       │   └── graph.py            # LangGraph StateGraph workflow
-│       ├── agents/
-│       │   ├── intent_router.py    # Query classification
-│       │   ├── rag_agent.py        # Document Q&A
-│       │   ├── sql_agent.py        # SQL generation & validation
-│       │   ├── code_agent.py       # Sandboxed code execution
-│       │   ├── research_agent.py   # Web search
-│       │   └── chat_agent.py       # General conversation & fallback
-│       ├── state/
-│       │   ├── state.py            # OrchestratorState schemas
-│       │   └── normalize.py        # State normalization utilities
-│       ├── storage/
-│       │   └── sqlite_store.py     # SQLite persistence layer
-│       ├── llm/
-│       │   └── router.py           # Gemini + Hugging Face fallback routing
-│       └── config/
-│           └── tenant_config.py    # Multi-tenant / workspace settings
-│
-├── nexus-frontend/                 # Next.js UI image (REST client only)
-│   ├── Dockerfile
-│   ├── package.json
-│   └── app/
-│       ├── page.js                 # Main UI & Chat interface
-│       ├── layout.js               # Global layouts
-│       └── globals.css             # UI styling
-│
-├── workspaces/                     # Shared document & FAISS storage (bind-mounted)
-│   └── preview.png                 # README dashboard screenshot (optional)
-├── streamlit_app.py                # Legacy monolithic UI (deprecated)
-├── requirements.txt                # Root deps for legacy local scripts
-└── README.md
+```mermaid
+graph TD
+    UI[Next.js Premium UI <br/> :3005] -->|REST / JSON| GW(FastAPI Gateway <br/> :8000)
+    
+    GW -->|Validate JWT / X-Guest-ID| Auth{Security Layer}
+    Auth -->|Route| ORCH[LangGraph Orchestrator]
+    
+    ORCH --> RAG[RAG Agent]
+    ORCH --> SQL[SQL Agent]
+    ORCH --> WEB[Research Agent]
+    
+    RAG <-->|Dense Vectors| PG[(PostgreSQL + pgvector <br/> :5432)]
+    RAG <-->|Entity Traversal| MG[(Memgraph <br/> :7687)]
+    
+    style UI fill:#ea580c,stroke:#c2410c,stroke-width:2px,color:#fff
+    style GW fill:#009688,stroke:#00796B,stroke-width:2px,color:#fff
+    style ORCH fill:#1C3C3C,stroke:#000,stroke-width:2px,color:#fff
+    style PG fill:#336791,stroke:#234a66,stroke-width:2px,color:#fff
+    style MG fill:#f15a24,stroke:#c0481c,stroke-width:2px,color:#fff
 ```
 
 ---
 
-## 🛠️ Local Development Setup (Quickstart)
+## 🐳 Production Deployment (AWS EC2)
+
+The application is engineered for horizontal scaling and currently runs on a production AWS EC2 `t3.medium` instance. 
+Traffic is securely reverse-proxied providing TLS termination and enterprise-ready network mapping, never exposing raw container ports to the public web.
+
+**Docker Services Provisioned:**
+1. `agenticflow-backend`: FastAPI + LangGraph worker
+2. `agenticflow-frontend`: Next.js Standalone UI
+3. `agenticflow-postgres`: PostgreSQL with `pgvector`
+4. `agenticflow-memgraph`: High-performance Graph DB
+
+---
+
+## 🛠️ Local Development (Quickstart)
 
 ### Prerequisites
-
 - [Docker](https://docs.docker.com/get-docker/) & Docker Compose v2+
-- [Git](https://git-scm.com/)
-- Google Gemini API key (required)
-- Hugging Face token (optional — enables LLM fallback)
+- Google Gemini API Key
 
-### 1. Clone the repository
-
+### 1. Clone & Setup
 ```bash
-git clone https://github.com/Harsh-Sharma29/Nexus-ai-orchestrator.git
-cd Nexus-ai-orchestrator
+git clone https://github.com/Harsh-Sharma29/AgenticFlow.git
+cd AgenticFlow
 ```
 
-### 2. Configure environment variables
-
-Create a `.env` file in the **project root** (same directory as `docker-compose.yml`). The backend loads this file automatically; it is listed in `.gitignore` and must never be committed.
-
+### 2. Environment Variables
+Create a `.env` file in the project root:
 ```env
-# ── Required ──────────────────────────────────────────────────────────
-GOOGLE_API_KEY=your-google-gemini-api-key
+# ── Security ──────────────────────────────────────────────────────────
+JWT_SECRET=super-secure-production-key-here
 
-# ── Optional — LLM fallback when Gemini is unavailable ─────────────────
-HUGGINGFACEHUB_API_TOKEN=your-huggingface-token
-HF_FALLBACK_MODEL=HuggingFaceH4/zephyr-7b-beta
+# ── AI Keys ───────────────────────────────────────────────────────────
+GOOGLE_API_KEY=your-gemini-api-key
+TAVILY_API_KEY=your-tavily-search-key
 
-# ── Optional — LangSmith observability ─────────────────────────────────
-LANGCHAIN_ENDPOINT=https://api.smith.langchain.com
-LANGCHAIN_API_KEY=your-langsmith-key
-LANGCHAIN_PROJECT=autonomous-ai-orchestrator
-
-# ── Optional — tuning (defaults shown) ─────────────────────────────────
+# ── System Defaults ────────────────────────────────────────────────────
 PRIMARY_LLM_MODEL=gemini-2.5-flash
 EMBEDDING_MODEL=gemini-embedding-001
-SQLITE_DB_PATH=/app/data/memory.db
-CORS_ORIGINS=*
 DEBUG=false
 ```
 
-| Variable | Required | Purpose |
-|----------|----------|---------|
-| `GOOGLE_API_KEY` | **Yes** | Primary Gemini LLM access |
-| `HUGGINGFACEHUB_API_TOKEN` | No | Fallback LLM via Hugging Face Hub |
-| `LANGCHAIN_API_KEY` | No | LangSmith tracing |
-| `SQLITE_DB_PATH` | No | Overridden in Compose to `/app/data/memory.db` |
-
-> **Note:** `API_BASE_URL` is set inside `docker-compose.yml` for the frontend (`http://backend:8000`). For bare-metal local UI development against a running API, use `http://localhost:8000`.
-
-### 3. Build and run the stack
-
+### 3. Launch the Mesh
 ```bash
 docker-compose up --build -d
 ```
+The backend includes a dependency health-check; it waits for both Postgres and Memgraph to be fully ready before spinning up the API. Once the API is healthy, the frontend unlocks.
 
-| Service | URL | Description |
-|---------|-----|-------------|
-| **Frontend** | http://localhost:3000 | Next.js UI |
-| **Backend** | http://localhost:8000 | FastAPI + OpenAPI |
-| **API Docs** | http://localhost:8000/docs | Interactive Swagger UI |
-| **Health** | http://localhost:8000/api/health | Liveness probe (used by Compose) |
-
-**Useful commands:**
-
-```bash
-docker-compose up -d               # Detached mode
-docker-compose logs -f backend     # Tail backend logs
-docker-compose down                # Stop and remove containers
-```
-
-On first boot, the backend waits until its health check passes before the frontend starts — preventing race conditions where the UI calls an API that is not yet ready.
+| Service | Container | Host Address & Port | Description |
+|---------|-----------|---------------------|-------------|
+| **Frontend UI** | `nexus-frontend` | [http://localhost:3005](http://localhost:3005) | Premium Next.js Web Interface |
+| **Backend API** | `nexus-backend` | [http://localhost:8005/docs](http://localhost:8005/docs) | FastAPI Swagger & REST Endpoints |
+| **PostgreSQL** | `nexus-postgres` | `localhost:5432` | Relational DB + `pgvector` index |
+| **Memgraph** | `nexus-memgraph` | `localhost:7687` | Bolt protocol port for Knowledge Graph |
+| **Memgraph Lab**| `nexus-memgraph` | `localhost:7444` | HTTP WebSocket port for Memgraph UI |
 
 ---
 
 <p align="center">
-  <strong>Nexus AI Orchestrator</strong> — Enterprise graph orchestration, production container mesh, live on AWS.<br/>
-  Built by <strong>Harsh Sharma</strong>
+  Built with ❤️ by <strong>Harsh Sharma</strong>
 </p>

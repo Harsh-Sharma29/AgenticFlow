@@ -1,7 +1,7 @@
 import './globals.css';
 
 export const metadata = {
-  title: 'Nexus AI Orchestrator',
+  title: 'AgenticFlow Orchestrator',
   description: 'Enterprise-grade multi-agent AI orchestrator',
 };
 

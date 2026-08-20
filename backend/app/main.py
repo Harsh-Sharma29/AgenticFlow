@@ -1,4 +1,4 @@
-"""FastAPI application entrypoint for the Nexus AI Orchestrator.
+"""FastAPI application entrypoint for the AgenticFlow Orchestrator.
 
 Initialises the app, configures CORS middleware, and includes the
 API router. Run with:
@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.api.endpoints import router as api_router
+from backend.app.api.auth import router as auth_router
 from backend.app.config import get_settings
 
 # ---------------------------------------------------------------------------
@@ -31,7 +32,7 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 app = FastAPI(
-    title="Nexus AI Orchestrator",
+    title="AgenticFlow Orchestrator",
     description="Production-grade async LangGraph backend with multi-agent routing, RAG, and conversational memory.",
     version="1.0.0",
     docs_url="/docs",
@@ -54,6 +55,7 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # Routers
 # ---------------------------------------------------------------------------
+app.include_router(auth_router, prefix="/api/auth", tags=["Auth"])
 app.include_router(api_router)
 
 
@@ -62,14 +64,14 @@ app.include_router(api_router)
 # ---------------------------------------------------------------------------
 @app.on_event("startup")
 async def on_startup():
-    logger.info("🚀  Nexus AI Orchestrator starting up …")
+    logger.info("🚀  AgenticFlow Orchestrator starting up …")
     logger.info("   Primary LLM : %s", settings.PRIMARY_LLM_MODEL)
     logger.info("   CORS origins : %s", origins)
 
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    logger.info("Nexus AI Orchestrator shutting down.")
+    logger.info("AgenticFlow Orchestrator shutting down.")
 
 
 # ---------------------------------------------------------------------------
@@ -77,4 +79,4 @@ async def on_shutdown():
 # ---------------------------------------------------------------------------
 @app.get("/", include_in_schema=False)
 async def root():
-    return {"message": "Nexus AI Orchestrator is running. Visit /docs for the API."}
+    return {"message": "AgenticFlow Orchestrator is running. Visit /docs for the API."}
