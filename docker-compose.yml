@@ -18,7 +18,7 @@ services:
       - "5432:5432"
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
       POSTGRES_DB: agenticflow
     volumes:
       - postgres-data:/var/lib/postgresql/data
@@ -60,7 +60,7 @@ services:
       - .env
     environment:
       - PYTHONUNBUFFERED=1
-      - POSTGRES_URI=postgresql://postgres:password@postgres:5432/agenticflow
+      - POSTGRES_URI=postgresql://postgres:${POSTGRES_PASSWORD:-password}@postgres:5432/agenticflow
     volumes:
       - backend-data:/app/data        # Persist standard files
       - ./backend:/app/backend        # Hot reload backend source
@@ -88,7 +88,7 @@ services:
     ports:
       - "3005:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8005
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8005}
     depends_on:
       backend:
         condition: service_healthy
