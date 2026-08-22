@@ -5,41 +5,61 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
 jobs:
   validate-and-deploy:
     runs-on: ubuntu-latest
-    
+
     steps:
+      # ---------------------------------------------------------
+      # 1. Checkout
+      # ---------------------------------------------------------
       - name: Checkout repository
-        uses: actions/checkout@v4
-        
+        uses: actions/checkout@v7
+
+      # ---------------------------------------------------------
+      # 2. Frontend CI
+      # ---------------------------------------------------------
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: '20'
-          cache: 'npm'
+          node-version: "24"
+          cache: npm
           cache-dependency-path: nexus-frontend/package-lock.json
-          
+
       - name: Frontend Validation
         working-directory: ./nexus-frontend
         run: |
           npm ci
           npm run lint
           npm run build
-          
+
+      # ---------------------------------------------------------
+      # 3. Backend CI
+      # ---------------------------------------------------------
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
-          python-version: '3.11'
-          
-      - name: Backend Validation (Lightweight)
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Backend Validation
         working-directory: ./backend
         run: |
           python -m pip install --upgrade pip
           pip install flake8
-          # Stop the build if there are Python syntax errors or undefined names
           flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-          
+
+      # ---------------------------------------------------------
+      # 4. Deploy to EC2
+      # ---------------------------------------------------------
       - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -47,27 +67,116 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
           script_stop: true
+
           script: |
-            echo "=== Deployment started ==="
+            set -e
+
+            echo "=========================================="
+            echo "🚀 Starting AgenticFlow deployment"
+            echo "=========================================="
+
             cd /home/ubuntu/AgenticFlow
-            
-            echo "=== Updating code from GitHub ==="
+
+            # ---------------------------------------------------
+            # Update source code
+            # ---------------------------------------------------
+            echo "=== Fetching latest main branch ==="
             git fetch origin main
             git reset --hard origin/main
-            
+
+            echo "=== Current commit ==="
+            git rev-parse --short HEAD
+
+            # ---------------------------------------------------
+            # Disk check before build
+            # ---------------------------------------------------
+            echo "=== Disk usage before build ==="
+            df -h /
+
+            # ---------------------------------------------------
+            # Docker build
+            # ---------------------------------------------------
             echo "=== Building Docker images ==="
             docker compose build
-            
-            echo "=== Restarting services ==="
+
+            # ---------------------------------------------------
+            # Start/update services
+            # ---------------------------------------------------
+            echo "=== Starting services ==="
             docker compose up -d
-            
-            echo "=== Waiting for services to stabilize ==="
-            sleep 5
-            
-            echo "=== Deployment finished. Current services status ==="
+
+            # ---------------------------------------------------
+            # Wait for backend health
+            # ---------------------------------------------------
+            echo "=== Waiting for backend health ==="
+
+            for i in {1..30}; do
+              if curl --fail --silent --show-error \
+                http://localhost/api/health > /tmp/agenticflow-health.json; then
+
+                echo "✅ Backend health check passed"
+                cat /tmp/agenticflow-health.json
+                break
+              fi
+
+              if [ "$i" -eq 30 ]; then
+                echo "❌ Backend health check failed"
+
+                echo "=== Service status ==="
+                docker compose ps
+
+                echo "=== Backend logs ==="
+                docker compose logs --tail=150 backend
+
+                exit 1
+              fi
+
+              echo "⏳ Backend not ready yet... attempt $i/30"
+              sleep 5
+            done
+
+            # ---------------------------------------------------
+            # Verify container states
+            # ---------------------------------------------------
+            echo "=== Verifying container states ==="
+
             docker compose ps
-            
-            if docker compose ps | grep -iE "exit|restarting|created"; then
-              echo "Error: One or more services are not running properly."
+
+            BAD_SERVICES=$(
+              docker compose ps --format '{{.Service}} {{.State}} {{.Health}}' |
+              grep -iE 'exited|restarting|unhealthy' || true
+            )
+
+            if [ -n "$BAD_SERVICES" ]; then
+              echo "❌ One or more services are unhealthy:"
+              echo "$BAD_SERVICES"
+
+              echo "=== Recent logs ==="
+              docker compose logs --tail=100
+
               exit 1
             fi
+
+            # ---------------------------------------------------
+            # Verify Nginx/frontend entry point
+            # ---------------------------------------------------
+            echo "=== Verifying Nginx ==="
+
+            curl --fail --silent --show-error \
+              http://localhost/ > /dev/null
+
+            echo "✅ Nginx/frontend check passed"
+
+            # ---------------------------------------------------
+            # Final status
+            # ---------------------------------------------------
+            echo "=== Disk usage after deployment ==="
+            df -h /
+
+            echo "=== Final Docker status ==="
+            docker compose ps
+
+            echo "=========================================="
+            echo "✅ AgenticFlow deployment successful"
+            echo "=========================================="
+
