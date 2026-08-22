@@ -19,7 +19,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 # Copy backend source + root .env
 COPY backend/ /app/backend/
-COPY .env /app/.env
 
 # Expose FastAPI port
 EXPOSE 8005

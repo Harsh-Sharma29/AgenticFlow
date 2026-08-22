@@ -14,8 +14,6 @@ services:
   postgres:
     image: pgvector/pgvector:pg15
     container_name: agenticflow-postgres
-    ports:
-      - "5432:5432"
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
@@ -34,9 +32,6 @@ services:
   memgraph:
     image: memgraph/memgraph-mage:latest
     container_name: agenticflow-memgraph
-    ports:
-      - "7687:7687"
-      - "7444:7444"
     volumes:
       - memgraph-data:/var/lib/memgraph
     restart: unless-stopped
@@ -54,8 +49,8 @@ services:
       context: .                      # Project root (backend imports use backend.app.*)
       dockerfile: backend/Dockerfile
     container_name: agenticflow-backend
-    ports:
-      - "8005:8005"
+    expose:
+      - "8005"
     env_file:
       - .env
     environment:
@@ -85,13 +80,29 @@ services:
       context: ./nexus-frontend
       dockerfile: Dockerfile
     container_name: agenticflow-frontend
-    ports:
-      - "3005:3000"
+    expose:
+      - "3000"
     environment:
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8005}
     depends_on:
       backend:
         condition: service_healthy
+    restart: unless-stopped
+
+
+
+  # ── Nginx Reverse Proxy ───────────────────────────────────────────
+  nginx:
+    image: nginx:latest
+    container_name: agenticflow-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - frontend
+      - backend
     restart: unless-stopped
 
 volumes:
@@ -101,4 +112,3 @@ volumes:
     driver: local
   postgres-data:
     driver: local
-

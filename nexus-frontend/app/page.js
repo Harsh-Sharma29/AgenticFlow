@@ -79,7 +79,7 @@ export default function Home() {
 
   const fetchSessions = async (ws) => {
     try {
-      const res = await fetch(`http://127.0.0.1:8005/api/sessions?workspace_id=${ws}`, {
+      const res = await fetch(`/api/sessions?workspace_id=${ws}`, {
         headers: authHeaders()
       });
       if (res.ok) {
@@ -103,7 +103,7 @@ export default function Home() {
     try {
       setIsLoading(true);
       setLoadingStatus('Loading session...');
-      const res = await fetch(`http://127.0.0.1:8005/api/sessions/${sessionId}?workspace_id=${workspaceId}`, {
+      const res = await fetch(`/api/sessions/${sessionId}?workspace_id=${workspaceId}`, {
         headers: authHeaders()
       });
       if (res.ok) {
@@ -131,7 +131,7 @@ export default function Home() {
     const newName = prompt('Enter new session name:', currentName);
     if (newName && newName.trim() !== '' && newName !== currentName) {
       try {
-        await fetch(`http://127.0.0.1:8005/api/sessions/${sessionId}?workspace_id=${workspaceId}`, {
+        await fetch(`/api/sessions/${sessionId}?workspace_id=${workspaceId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json', ...authHeaders() },
           body: JSON.stringify({ name: newName.trim() })
@@ -147,7 +147,7 @@ export default function Home() {
     e.stopPropagation();
     if (confirm('Are you sure you want to delete this chat session?')) {
       try {
-        await fetch(`http://127.0.0.1:8005/api/sessions/${sessionId}?workspace_id=${workspaceId}`, {
+        await fetch(`/api/sessions/${sessionId}?workspace_id=${workspaceId}`, {
           method: 'DELETE',
           headers: authHeaders()
         });
@@ -179,7 +179,7 @@ export default function Home() {
     formData.append('file', file);
 
     try {
-      const res = await fetch('http://127.0.0.1:8005/api/upload', {
+      const res = await fetch('/api/upload', {
         method: 'POST',
         headers: authHeaders(),
         body: formData,
@@ -307,7 +307,7 @@ export default function Home() {
 
     try {
       // Direct call to FastAPI backend streaming endpoint
-      const res = await fetch('http://127.0.0.1:8005/api/chat/stream', {
+      const res = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ 

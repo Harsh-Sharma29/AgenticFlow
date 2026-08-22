@@ -19,7 +19,7 @@ export default function RegisterPage() {
     setIsLoading(true);
 
     try {
-      const res = await fetch('http://127.0.0.1:8005/api/auth/register', {
+      const res = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, email, password }),
