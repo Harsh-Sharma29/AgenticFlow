@@ -17,15 +17,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # ---------------------------------------------------------
-      # 1. Checkout
-      # ---------------------------------------------------------
+
+      # =========================================================
+      # 1. Checkout repository
+      # =========================================================
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      # ---------------------------------------------------------
+      # =========================================================
       # 2. Frontend CI
-      # ---------------------------------------------------------
+      # =========================================================
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
@@ -40,9 +41,9 @@ jobs:
           npm run lint
           npm run build
 
-      # ---------------------------------------------------------
+      # =========================================================
       # 3. Backend CI
-      # ---------------------------------------------------------
+      # =========================================================
       - name: Setup Python
         uses: actions/setup-python@v7
         with:
@@ -57,9 +58,9 @@ jobs:
           pip install flake8
           flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
 
-      # ---------------------------------------------------------
+      # =========================================================
       # 4. Deploy to EC2
-      # ---------------------------------------------------------
+      # =========================================================
       - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -77,9 +78,9 @@ jobs:
 
             cd /home/ubuntu/AgenticFlow
 
-            # ---------------------------------------------------
+            # =====================================================
             # Update source code
-            # ---------------------------------------------------
+            # =====================================================
             echo "=== Fetching latest main branch ==="
             git fetch origin main
             git reset --hard origin/main
@@ -87,57 +88,67 @@ jobs:
             echo "=== Current commit ==="
             git rev-parse --short HEAD
 
-            # ---------------------------------------------------
+            # =====================================================
             # Disk check before build
-            # ---------------------------------------------------
+            # =====================================================
             echo "=== Disk usage before build ==="
             df -h /
 
-            # ---------------------------------------------------
+            # =====================================================
             # Docker build
-            # ---------------------------------------------------
+            # =====================================================
             echo "=== Building Docker images ==="
             docker compose build
 
-            # ---------------------------------------------------
-            # Start/update services
-            # ---------------------------------------------------
+            # =====================================================
+            # Start / update services
+            # =====================================================
             echo "=== Starting services ==="
             docker compose up -d
 
-            # ---------------------------------------------------
+            # =====================================================
             # Wait for backend health
-            # ---------------------------------------------------
+            # =====================================================
             echo "=== Waiting for backend health ==="
 
+            BACKEND_HEALTHY=false
+
             for i in {1..30}; do
-              if curl --fail --silent --show-error \
-                http://localhost/api/health > /tmp/agenticflow-health.json; then
+              if curl \
+                --fail \
+                --silent \
+                --show-error \
+                http://localhost/api/health \
+                > /tmp/agenticflow-health.json; then
 
                 echo "✅ Backend health check passed"
                 cat /tmp/agenticflow-health.json
+                BACKEND_HEALTHY=true
                 break
-              fi
-
-              if [ "$i" -eq 30 ]; then
-                echo "❌ Backend health check failed"
-
-                echo "=== Service status ==="
-                docker compose ps
-
-                echo "=== Backend logs ==="
-                docker compose logs --tail=150 backend
-
-                exit 1
               fi
 
               echo "⏳ Backend not ready yet... attempt $i/30"
               sleep 5
             done
 
-            # ---------------------------------------------------
+            if [ "$BACKEND_HEALTHY" != "true" ]; then
+              echo "❌ Backend health check failed"
+
+              echo "=== Service status ==="
+              docker compose ps
+
+              echo "=== Backend logs ==="
+              docker compose logs --tail=150 backend
+
+              echo "=== Nginx logs ==="
+              docker compose logs --tail=100 nginx
+
+              exit 1
+            fi
+
+            # =====================================================
             # Verify container states
-            # ---------------------------------------------------
+            # =====================================================
             echo "=== Verifying container states ==="
 
             docker compose ps
@@ -157,26 +168,60 @@ jobs:
               exit 1
             fi
 
-            # ---------------------------------------------------
-            # Verify Nginx/frontend entry point
-            # ---------------------------------------------------
-            echo "=== Verifying Nginx ==="
+            # =====================================================
+            # Wait for Nginx + Next.js frontend
+            # =====================================================
+            echo "=== Waiting for frontend/Nginx ==="
 
-            curl --fail --silent --show-error \
-              http://localhost/ > /dev/null
+            FRONTEND_READY=false
 
-            echo "✅ Nginx/frontend check passed"
+            for i in {1..30}; do
+              HTTP_STATUS=$(curl \
+                --silent \
+                --output /dev/null \
+                --write-out "%{http_code}" \
+                http://localhost/ || true)
 
-            # ---------------------------------------------------
-            # Final status
-            # ---------------------------------------------------
+              if [ "$HTTP_STATUS" = "200" ]; then
+                echo "✅ Nginx/frontend check passed"
+                FRONTEND_READY=true
+                break
+              fi
+
+              echo "⏳ Frontend not ready yet... HTTP $HTTP_STATUS (attempt $i/30)"
+              sleep 5
+            done
+
+            if [ "$FRONTEND_READY" != "true" ]; then
+              echo "❌ Nginx/frontend health check failed"
+
+              echo "=== Service status ==="
+              docker compose ps
+
+              echo "=== Frontend logs ==="
+              docker compose logs --tail=150 frontend
+
+              echo "=== Nginx logs ==="
+              docker compose logs --tail=150 nginx
+
+              exit 1
+            fi
+
+            # =====================================================
+            # Final disk usage
+            # =====================================================
             echo "=== Disk usage after deployment ==="
             df -h /
 
+            # =====================================================
+            # Final Docker status
+            # =====================================================
             echo "=== Final Docker status ==="
             docker compose ps
 
+            # =====================================================
+            # Deployment successful
+            # =====================================================
             echo "=========================================="
             echo "✅ AgenticFlow deployment successful"
             echo "=========================================="
-
