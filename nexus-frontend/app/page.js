@@ -1,10 +1,13 @@
 'use client';
+import { generateUUID } from '../lib/uuid';
 
 import { useState, useRef, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 export default function Home() {
+  const router = useRouter();
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -27,7 +30,7 @@ export default function Home() {
   useEffect(() => {
     const savedTheme = localStorage.getItem('agenticflow_theme');
     if (savedTheme) {
-      setTheme(savedTheme);
+      setTimeout(() => setTheme(savedTheme), 0);
       document.documentElement.className = savedTheme;
     } else {
       document.documentElement.className = 'dark';
@@ -47,18 +50,18 @@ export default function Home() {
     const savedGuestCount = localStorage.getItem('agenticflow_guest_count');
     
     if (savedToken && savedUser) {
-      setToken(savedToken);
-      setUser(JSON.parse(savedUser));
+      setTimeout(() => setToken(savedToken), 0);
+      setTimeout(() => setUser(JSON.parse(savedUser)), 0);
     }
     if (savedGuestCount) {
-      setGuestMessageCount(parseInt(savedGuestCount, 10));
+      setTimeout(() => setGuestMessageCount(parseInt(savedGuestCount, 10)), 0);
     }
   }, []);
 
   const getGuestId = () => {
     let gid = localStorage.getItem('agenticflow_guest_id');
     if (!gid) {
-      gid = 'guest_' + crypto.randomUUID();
+      gid = 'guest_' + generateUUID();
       localStorage.setItem('agenticflow_guest_id', gid);
     }
     return gid;
@@ -73,7 +76,7 @@ export default function Home() {
     localStorage.removeItem('agenticflow_user');
     setToken(null);
     setUser(null);
-    setSessions([]);
+    setTimeout(() => setSessions([]), 0);
     startNewChat();
   };
 
@@ -93,10 +96,11 @@ export default function Home() {
 
   useEffect(() => {
     if (token) {
-      fetchSessions(workspaceId);
+      setTimeout(() => fetchSessions(workspaceId), 0);
     } else {
-      setSessions([]);
+      setTimeout(() => setSessions([]), 0);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId, token]);
 
   const loadSession = async (sessionId) => {
@@ -136,7 +140,7 @@ export default function Home() {
           headers: { 'Content-Type': 'application/json', ...authHeaders() },
           body: JSON.stringify({ name: newName.trim() })
         });
-        fetchSessions(workspaceId);
+      setTimeout(() => fetchSessions(workspaceId), 0);
       } catch (err) {
         console.error('Failed to rename session', err);
       }
@@ -154,7 +158,7 @@ export default function Home() {
         if (currentSessionId === sessionId) {
           startNewChat();
         }
-        fetchSessions(workspaceId);
+      setTimeout(() => fetchSessions(workspaceId), 0);
       } catch (err) {
         console.error('Failed to delete session', err);
       }
@@ -302,7 +306,7 @@ export default function Home() {
       localStorage.setItem('agenticflow_guest_count', newCount);
     }
 
-    const sessionIdToUse = currentSessionId || crypto.randomUUID();
+    const sessionIdToUse = currentSessionId || generateUUID();
     if (!currentSessionId) setCurrentSessionId(sessionIdToUse);
 
     try {
@@ -412,7 +416,7 @@ export default function Home() {
       }]);
     } finally {
       setIsLoading(false);
-      fetchSessions(workspaceId); // Refresh sidebar sessions
+      setTimeout(() => fetchSessions(workspaceId), 0); // Refresh sidebar sessions
     }
   };
 
@@ -480,7 +484,7 @@ export default function Home() {
               </div>
             </>
           ) : (
-            <div className="sidebar-footer-item" onClick={() => window.location.href = '/login'}>
+            <div className="sidebar-footer-item" onClick={() => router.push('/login')}>
               <span>🔑</span> Sign In / Register
             </div>
           )}
@@ -764,13 +768,13 @@ export default function Home() {
             </p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <button 
-                onClick={() => window.location.href = '/register'}
+                onClick={() => router.push('/register')}
                 style={{ background: 'linear-gradient(to right, #EA580C, #C2410C)', color: 'white', padding: '12px', borderRadius: '12px', border: 'none', cursor: 'pointer', fontWeight: '500' }}
               >
                 Create Free Account
               </button>
               <button 
-                onClick={() => window.location.href = '/login'}
+                onClick={() => router.push('/login')}
                 style={{ background: 'transparent', color: '#9ca3af', padding: '12px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.1)', cursor: 'pointer', fontWeight: '500' }}
               >
                 Sign In
