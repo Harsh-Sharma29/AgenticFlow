@@ -49,8 +49,8 @@ services:
       context: .                      # Project root (backend imports use backend.app.*)
       dockerfile: backend/Dockerfile
     container_name: agenticflow-backend
-    expose:
-      - "8005"
+    ports:
+      - "8005:8005"
     env_file:
       - .env
     environment:
