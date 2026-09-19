@@ -20,20 +20,21 @@ The platform handles complex requests by maintaining a persistent conversational
 
 ## Key Engineering Highlights
 
-- **Stateful LangGraph Orchestration:** Replaces traditional linear chains with a cyclic graph capable of routing, fallback, and retry logic.
+- **Stateful LangGraph Orchestration:** Replaces traditional linear chains with a cyclic graph capable of routing, fallback, and retry logic, using `MemorySaver` for in-memory graph state.
 - **Deterministic Intent Routing:** Queries are classified via LLM and strictly routed to specialized agents (`rag`, `sql`, `code`, `research`, `chat`).
 - **Hybrid RAG Engine:** Combines **PostgreSQL (pgvector)** for dense semantic search with **Memgraph** for graph-based entity relationship traversal.
-- **Asynchronous Execution:** Built on FastAPI with asynchronous `ainvoke` calls ensuring non-blocking execution under heavy loads, complete with Server-Sent Events (SSE) streaming.
-- **Multi-Tenant Isolation:** Maintains strict data boundaries using `user_id` and `workspace_id`, along with isolated guest sandboxing.
-- **Dockerized Service Mesh:** The entire system runs as a multi-container Docker mesh (Next.js, FastAPI, PostgreSQL, Memgraph, NGINX) for reproducible deployments.
+- **Asynchronous Execution:** Built on FastAPI supporting asynchronous `ainvoke` calls and Server-Sent Events (SSE) streaming.
+- **Multi-Tenant Isolation:** Maintains strict data boundaries using `user_id` and `workspace_id`, along with isolated guest sessions.
+- **Dockerized Service Mesh:** The multi-container Docker mesh (Next.js, FastAPI, PostgreSQL, Memgraph, NGINX) helps maintain consistent environments across development and deployment.
 
 ## Architecture
 
 ```mermaid
 graph TD
-    User -->|HTTP/REST/SSE| UI[Next.js Frontend]
-    UI -->|JWT Auth| NGINX[NGINX Reverse Proxy]
-    NGINX --> API[FastAPI Gateway]
+    User <-->|HTTP/REST| UI[Next.js Frontend]
+    UI <-->|Requests & SSE| NGINX[NGINX Reverse Proxy]
+    NGINX <-->|Requests & SSE| API[FastAPI Gateway]
+    API -.->|JWT Validation| API
     
     API -->|State Initialization| Router{LangGraph Orchestrator}
     
@@ -48,8 +49,7 @@ graph TD
     
     Web <-->|Search| Tavily[Tavily API]
     
-    Router -->|State Checkpoint| PG
-    Router -->|Response| API
+    Router -->|Save History| PG
 ```
 
 | Component | Responsibility |
@@ -57,7 +57,7 @@ graph TD
 | **Next.js Frontend** | Interactive UI with session management and SSE streaming. |
 | **FastAPI Gateway** | Auth validation, document upload handling, and async endpoint serving. |
 | **LangGraph Orchestrator** | State machine, deterministic intent routing, and agent coordination. |
-| **PostgreSQL + pgvector** | Persistent chat history storage and dense vector embeddings. |
+| **PostgreSQL + pgvector** | Custom persistent storage for chat history, workspaces, and dense vector embeddings. |
 | **Memgraph** | Knowledge graph storage for complex entity relationship traversal. |
 | **NGINX** | Reverse proxy handling traffic routing to frontend and backend services. |
 
@@ -80,8 +80,8 @@ graph TD
 | **Multi-Agent Orchestration** | Dedicated agents for specific problem domains. | `rag_agent`, `sql_agent`, `code_agent`, `research_agent`. |
 | **Hybrid RAG** | Simultaneous semantic and relational search. | PGVector & Memgraph integration via `rag_service`. |
 | **Web Research** | Fetches live internet data for current events. | Tavily API integration inside `research_agent`. |
-| **Guest Sandboxing** | Isolated sessions for unauthenticated users. | `user_id="guest"` logic applied at API level. |
-| **Persistent State** | Continuous conversations across sessions. | LangGraph `MemorySaver` and custom storage. |
+| **Guest Isolation** | Isolated sessions for unauthenticated users. | `user_id="guest"` logic applied at API level. |
+| **Persistent State** | Continuous conversations across sessions. | LangGraph `MemorySaver` (in-memory) and PostgreSQL (long-term history). |
 
 ## AI / Agent Architecture
 
@@ -109,7 +109,7 @@ The graph implements a `retry_handler` for unexpected failures and a `graceful_f
 The retrieval pipeline uses a Hybrid GraphRAG approach to combine semantic meaning and structural relationships.
 
 1. **Document Ingestion:** Uploaded files (PDFs, TXT, MD) are processed and chunked.
-2. **Embedding Generation:** Text chunks are passed through a local HuggingFace embedding model (`BAAI/bge-small-en-v1.5`) or Gemini.
+2. **Embedding Generation:** Text chunks are passed through a local HuggingFace embedding model (`BAAI/bge-small-en-v1.5`).
 3. **Vector Storage:** Dense vectors are stored in PostgreSQL via the `pgvector` extension.
 4. **Graph Extraction:** In parallel, entities and relationships are extracted from chunks and stored in Memgraph.
 5. **Semantic Retrieval:** User queries run similarity searches against PGVector for semantic matches.
@@ -121,7 +121,7 @@ The retrieval pipeline uses a Hybrid GraphRAG approach to combine semantic meani
 
 - **JWT Authentication:** Endpoint protection via JSON Web Tokens for user sessions.
 - **Workspace Isolation:** All data access (documents, vectors, chat history) is strictly filtered by `user_id` and `workspace_id`.
-- **Guest Sandboxing:** Unauthenticated requests default to a sandboxed "guest" environment to trial the system safely.
+- **Guest Isolation:** Unauthenticated requests default to an isolated "guest" session to trial the system safely.
 - **Input Validation:** Strict Pydantic schemas enforce payload integrity and type safety at the API layer.
 
 ## Tech Stack
@@ -129,7 +129,7 @@ The retrieval pipeline uses a Hybrid GraphRAG approach to combine semantic meani
 | Category | Technologies |
 |---|---|
 | **Language** | Python 3.10+, TypeScript |
-| **AI / Orchestration** | LangGraph, LangChain, Gemini API |
+| **AI / Orchestration** | LangGraph, LangChain, Gemini API, HuggingFace |
 | **Backend** | FastAPI, Pydantic |
 | **Frontend** | Next.js (React 18) |
 | **Databases** | PostgreSQL, Memgraph |
@@ -219,11 +219,7 @@ docker compose up --build -d
 <!-- Add knowledge graph screenshot -->
 <!-- Add SQL/code/research workflow screenshot -->
 
-## 🎥 Demo
 
-[▶ Watch the Demo](YOUR_DEMO_URL)
-
-The walkthrough demonstrates intent routing, specialized agent execution, hybrid retrieval, and asynchronous response handling via SSE streaming.
 
 ## Engineering Decisions
 
@@ -240,16 +236,16 @@ Using PostgreSQL with `pgvector` enables dense semantic similarity search direct
 Memgraph provides high-performance, in-memory graph traversal. This allows the system to extract and query explicit entities and relationships, which standard vector search often misses.
 
 ### Why both vector + graph?
-Standard vector search can lose semantic relationships between disconnected documents. Combining dense embeddings (pgvector) with explicit entity mappings (Memgraph) significantly improves context retrieval by locating both semantically similar text and structurally related facts.
+Standard vector search can lose semantic relationships between disconnected documents. Combining dense embeddings (pgvector) with explicit entity mappings (Memgraph) provides complementary semantic and structural retrieval signals, locating both semantically similar text and structurally related facts.
 
 ### Why Docker?
-The multi-container Docker mesh ensures absolute parity between local development and production deployments, isolating services and abstracting away dependency conflicts.
+The multi-container Docker mesh helps maintain consistent environments across development and deployment, isolating services and abstracting away dependency conflicts.
 
 ## Reliability / Error Handling
 
 - **Fallback Nodes:** The graph contains a `graceful_fallback` node to catch unhandled exceptions without crashing the user session.
 - **Retry Logic:** LLM parsing errors trigger a `retry_handler` node that re-prompts the model, improving robustness.
-- **State Checkpointing:** The orchestrator checkpoints state at every step using `MemorySaver`, allowing for reliable conversation history and state recovery.
+- **State Checkpointing:** The orchestrator maintains in-memory state using LangGraph's `MemorySaver`, while long-term conversation history and documents are persisted in PostgreSQL.
 - **Validation:** Strict Pydantic models validate incoming API payloads at the FastAPI layer.
 
 ## Current Status
@@ -260,12 +256,12 @@ The multi-container Docker mesh ensures absolute parity between local developmen
 ## Limitations
 
 - Web Research capabilities are strictly dependent on external Tavily API rate limits.
-- Code execution is currently sandboxed via process isolation (Python `exec` with redirected stdout), which is not as secure as full Firecracker microVMs.
+- Code execution is currently run directly in the host process using Python `exec()`, which lacks secure isolation compared to full Firecracker microVMs.
 - Heavy reliance on external LLM providers (Gemini) requires prompt retuning if migrating to local models.
 
 ## Future Improvements
 
-- [ ] Implement Firecracker microVMs or gVisor for absolute code execution security.
+- [ ] Implement Firecracker microVMs or gVisor for stronger code-execution isolation.
 - [ ] Add user-configurable agent weights and model selection from the UI.
 - [ ] Support multi-modal inputs (images, audio) natively in the Next.js frontend.
 - [ ] Integrate with external GitHub repositories for direct codebase analysis.
